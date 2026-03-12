@@ -1,12 +1,19 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
+
 const required = [
-  'ANTHROPIC_API_KEY',
   'SUPABASE_URL',
   'SUPABASE_ANON_KEY',
   'SUPABASE_SERVICE_ROLE_KEY'
 ];
+if (AI_PROVIDER === 'anthropic') {
+  required.push('ANTHROPIC_API_KEY');
+}
+if (AI_PROVIDER === 'gemini') {
+  required.push('GEMINI_API_KEY');
+}
 
 const missing = required.filter((k) => {
   const v = process.env[k];
@@ -19,7 +26,9 @@ if (missing.length > 0) {
     `- ${missing.join('\n- ')}`,
     '',
     'Where to find them:',
-    '- ANTHROPIC_API_KEY: Claude console -> API Keys',
+    AI_PROVIDER === 'anthropic'
+      ? '- ANTHROPIC_API_KEY: Claude console -> API Keys'
+      : '- GEMINI_API_KEY: Google AI Studio -> API Keys',
     '- SUPABASE_URL / SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY: Supabase project -> Settings -> API',
     '',
     'Add them to your environment or a .env file in the project root before starting the server.'
@@ -38,9 +47,13 @@ const config = Object.freeze({
   PORT: Number(process.env.PORT) || 3001,
   NODE_ENV,
   IS_PRODUCTION: NODE_ENV === 'production',
+  AI_PROVIDER,
 
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
+  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
+
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
 
   SUPABASE_URL: process.env.SUPABASE_URL,
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,

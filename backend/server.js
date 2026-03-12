@@ -5,25 +5,18 @@ import express from 'express';
 import cors from 'cors';
 
 import config from './lib/config.js';
+import { corsOptions, generalLimiter, chatLimiter, feedbackLimiter } from './middleware/security.js';
 
 import chatRoutes from './routes/chat.js';
 import feedbackRoutes from './routes/feedback.js';
 import historyRoutes from './routes/history.js';
+import pingRoutes from './routes/ping.js';
 
 const app = express();
 
-const corsOptions = {
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (config.EXTENSION_ORIGIN === '*') {
-      if (origin.startsWith('chrome-extension://')) return callback(null, true);
-      return callback(null, false);
-    }
-    if (origin === config.EXTENSION_ORIGIN) return callback(null, true);
-    return callback(null, false);
-  }
-};
+console.log(`AI provider: ${config.AI_PROVIDER} model: ${config.AI_PROVIDER === 'anthropic' ? config.ANTHROPIC_MODEL : config.GEMINI_MODEL}`);
 
+app.use(generalLimiter);
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
@@ -37,9 +30,10 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use('/api/chat', chatRoutes);
-app.use('/api/feedback', feedbackRoutes);
+app.use('/api/chat', chatLimiter, chatRoutes);
+app.use('/api/feedback', feedbackLimiter, feedbackRoutes);
 app.use('/api/history', historyRoutes);
+app.use('/api/ping', pingRoutes);
 
 app.get('/health', cors(), (req, res) => {
   res.json({

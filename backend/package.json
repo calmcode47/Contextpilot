@@ -16,6 +16,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
     "@anthropic-ai/sdk": "latest",
+    "@google/generative-ai": "latest",
     "@supabase/supabase-js": "^2.99.1",
     "express-rate-limit": "^8.3.1",
     "uuid": "^13.0.0"
