@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ContextPilot</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  </head>
+  <body>
+    <div class="cp-app">
+      <!-- Header -->
+      <div class="cp-header">
+        <div class="cp-header-left">
+          <div class="cp-logo">CP</div>
+          <div class="cp-title">ContextPilot</div>
+        </div>
+        <div class="cp-header-right">
+          <span id="pageBadge" class="cp-badge">🌐 Web</span>
+          <button class="cp-gear" title="Settings" aria-label="Settings">⚙️</button>
+        </div>
+      </div>
+
+      <!-- Preset Command Bar -->
+      <div class="cp-presets" id="presets" aria-label="Quick actions"></div>
+
+      <!-- Chat Area -->
+      <div class="cp-chat" id="chat">
+        <!-- Empty state -->
+        <div id="emptyState" class="cp-empty">
+          <div class="cp-empty-illustration">💬</div>
+          <div class="cp-empty-text">I can see you're on <span id="emptyPageType">this page</span>. Ask me anything or use a quick action above.</div>
+        </div>
+        <!-- Typing indicator -->
+        <div id="typing" class="cp-typing hidden">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="cp-composer">
+        <div class="cp-input-wrap">
+          <textarea id="input" rows="1" placeholder="Ask about this page..." class="cp-textarea"></textarea>
+          <div id="charHint" class="cp-charhint hidden">Press Enter to send • Shift+Enter for newline</div>
+        </div>
+        <button id="send" class="cp-send" disabled>Send</button>
+      </div>
+    </div>
+    <script src="config.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+  </html>

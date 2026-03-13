@@ -100,6 +100,8 @@ router.post('/', async (req, res, next) => {
     return res.json({
       response: agentResult.response,
       toolUsed: agentResult.toolUsed,
+      toolsCalledChain: agentResult.toolsCalledChain || [],
+      iterations: agentResult.iterations ?? 0,
       messageId,
       sessionId,
       usage: {
