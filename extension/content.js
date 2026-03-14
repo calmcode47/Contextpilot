@@ -14,6 +14,33 @@ function detectPageType(url) {
   }
 }
 
+function getPlatformDetector(url) {
+  const u = String(url || '').toLowerCase();
+  if (u.includes('mail.google.com')) {
+    return {
+      platform: 'gmail',
+      triggerSelectors: ['[data-message-id]', '.a3s.aiL', '[role="listitem"]', 'div.gs'],
+      debounceMs: 600,
+      minContentLength: 50
+    };
+  }
+  if (u.includes('linkedin.com')) {
+    return {
+      platform: 'linkedin',
+      triggerSelectors: [
+        '.pv-profile-section',
+        '.scaffold-layout__main',
+        '.jobs-description',
+        '.artdeco-card',
+        'h1.text-heading-xlarge'
+      ],
+      debounceMs: 1000,
+      minContentLength: 100
+    };
+  }
+  return { platform: 'generic', triggerSelectors: null, debounceMs: 1200, minContentLength: 30 };
+}
+
 function pickMainElement() {
   const candidates = [];
   const byTag = Array.from(document.querySelectorAll('article, main'));
@@ -103,6 +130,36 @@ function extractCleanText() {
   }
 }
 
+function extractGmailContent() {
+  try {
+    const emailBody = document.querySelector('.a3s.aiL, [data-message-id] .a3s');
+    if (emailBody) {
+      const txt = String(emailBody.innerText || '').trim();
+      if (txt.length > 50) {
+        const subjectEl = document.querySelector('h2.hP');
+        const subject = (subjectEl && subjectEl.innerText) || document.title || 'Email Thread';
+        return {
+          type: 'email_thread',
+          content: cleanAndTruncate(txt, 8000),
+          subject
+        };
+      }
+    }
+    const threadList = document.querySelector('[role="main"] table');
+    if (threadList) {
+      const listTxt = String(threadList.innerText || '').trim();
+      if (listTxt.length > 0) {
+        return {
+          type: 'inbox_list',
+          content: cleanAndTruncate(listTxt, 4000),
+          subject: 'Gmail Inbox'
+        };
+      }
+    }
+  } catch {}
+  return null;
+}
+
 function extractPageContent() {
   try {
     const url = window.location.href;
@@ -114,7 +171,20 @@ function extractPageContent() {
         title = url;
       }
     }
-    const content = extractCleanText();
+    const pageType = detectPageType(url);
+    let content = '';
+    if (pageType === 'gmail') {
+      const g = extractGmailContent();
+      if (g) {
+        content = g.content;
+        if (g.type === 'email_thread' && g.subject) {
+          title = g.subject;
+        }
+      }
+    }
+    if (!content) {
+      content = extractCleanText();
+    }
     const payloadContent =
       content && content.trim().length >= 50
         ? content
@@ -122,7 +192,7 @@ function extractPageContent() {
     return {
       url,
       title,
-      pageType: detectPageType(url),
+      pageType,
       content: payloadContent,
       extractedAt: new Date().toISOString()
     };
@@ -138,11 +208,79 @@ function extractPageContent() {
   }
 }
 
+// SPA handling: track URL changes and significant content mutations
+let lastUrl = window.location.href;
+let lastExtractedContent = null;
+let contentRefreshTimeout = null;
+let currentDetector = getPlatformDetector(window.location.href);
+
+const urlObserver = new MutationObserver(() => {
+  const currentUrl = window.location.href;
+  if (currentUrl !== lastUrl) {
+    lastUrl = currentUrl;
+    currentDetector = getPlatformDetector(currentUrl);
+    clearTimeout(contentRefreshTimeout);
+    contentRefreshTimeout = setTimeout(() => {
+      lastExtractedContent = extractPageContent();
+      try {
+        console.log('[ContextPilot Content] URL changed — content refreshed:', lastExtractedContent.pageType);
+      } catch {}
+    }, currentDetector.debounceMs);
+  }
+});
+urlObserver.observe(document.body, { childList: true, subtree: true });
+
+const contentObserver = new MutationObserver((mutations) => {
+  let shouldRefresh = false;
+  if (currentDetector.triggerSelectors) {
+    shouldRefresh = mutations.some((mutation) => {
+      const addedNodes = Array.from(mutation.addedNodes || []);
+      const hasTargetNode = addedNodes.some((node) => {
+        if (!node || node.nodeType !== 1) return false;
+        return currentDetector.triggerSelectors.some((sel) => {
+          try {
+            return node.matches?.(sel) || node.querySelector?.(sel);
+          } catch {
+            return false;
+          }
+        });
+      });
+      if (hasTargetNode) return true;
+      return currentDetector.triggerSelectors.some((sel) => {
+        try {
+          return mutation.target?.matches?.(sel);
+        } catch {
+          return false;
+        }
+      });
+    });
+  } else {
+    shouldRefresh = mutations.some((m) => (m.addedNodes ? m.addedNodes.length : 0) > 5);
+  }
+  if (shouldRefresh) {
+    clearTimeout(contentRefreshTimeout);
+    contentRefreshTimeout = setTimeout(() => {
+      const newContent = extractPageContent();
+      const isMeaningfullyDifferent =
+        (!lastExtractedContent || newContent.content !== lastExtractedContent.content) &&
+        newContent.content.length >= currentDetector.minContentLength;
+      if (isMeaningfullyDifferent) {
+        lastExtractedContent = newContent;
+        chrome.runtime.sendMessage({ type: 'PAGE_CONTENT_UPDATED', data: newContent }).catch(() => {});
+      }
+    }, currentDetector.debounceMs);
+  }
+});
+const mainContent = document.querySelector('main, [role="main"], #main, body');
+if (mainContent) {
+  contentObserver.observe(mainContent, { childList: true, subtree: true });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   try {
     if (message && message.type === 'GET_PAGE_CONTENT') {
-      const data = extractPageContent();
-      sendResponse({ success: true, data });
+      lastExtractedContent = extractPageContent();
+      sendResponse({ success: true, data: lastExtractedContent });
       return true;
     }
     if (message && message.type === 'GET_PAGE_CONTEXT') {

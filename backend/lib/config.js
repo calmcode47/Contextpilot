@@ -53,7 +53,9 @@ const config = Object.freeze({
   ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
 
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+  // gemini-2.0-flash is the recommended default — it has stable function calling (tool use) support.
+  // Do NOT use gemini-1.5-flash as it has inconsistent functionCall emission that breaks tool use.
+  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
 
   SUPABASE_URL: process.env.SUPABASE_URL,
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
@@ -64,3 +66,25 @@ const config = Object.freeze({
 });
 
 export default config;
+
+const GEMINI_TOOLS_CAPABLE_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-exp',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-1.5-pro'
+];
+
+const GEMINI_UNRELIABLE_FOR_TOOLS = ['gemini-1.5-flash', 'gemini-1.0-pro'];
+
+if (AI_PROVIDER === 'gemini') {
+  const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+  if (GEMINI_UNRELIABLE_FOR_TOOLS.includes(model)) {
+    // Warning only — guides operators to set a reliable tools-capable model
+    console.warn(
+      `[CONFIG WARNING] GEMINI_MODEL="${model}" has inconsistent function calling support. ` +
+        `Tool use may silently fail. Recommended: gemini-2.0-flash. ` +
+        `Set GEMINI_MODEL=gemini-2.0-flash in your environment.`
+    );
+  }
+}

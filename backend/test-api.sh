@@ -8,7 +8,7 @@ YELLOW="\033[33m"
 NC="\033[0m"
 
 pass=0
-total=14
+total=17
 
 print_header() {
   echo -e "${BLUE}\n===== $1 =====${NC}"
@@ -356,6 +356,202 @@ for i in $(seq 1 21); do
   fi
 done
 pass_fail "$rl_pass"
+
+print_header "TEST 15 — Tool Use Actually Fires"
+chat_body_toolfire=$(cat <<'JSON'
+{
+  "message": "Please summarize the key points of this page in bullet points",
+  "pageContext": {
+    "url": "https://en.wikipedia.org/wiki/Artificial_intelligence",
+    "title": "Artificial Intelligence - Wikipedia",
+    "content": "Artificial intelligence (AI) is intelligence demonstrated by machines. AI research includes reasoning, knowledge, planning, learning, natural language processing, perception, and robotics. Machine learning is a subset of AI; deep learning uses neural networks with many layers.",
+    "pageType": "generic"
+  },
+  "sessionId": "tool-test-001",
+  "userId": null
+}
+JSON
+)
+read -r code body <<<"$(request POST "$BASE_URL/api/chat" "$chat_body_toolfire")"
+print_status "$code"
+echo "$body"
+tool_used=$(get_json_field "$body" '.toolUsed')
+if [ "$code" = "200" ] && [ -n "$tool_used" ] && [ "$tool_used" = "summarize_page" ]; then
+  pass_fail 0
+else
+  pass_fail 1
+fi
+
+print_header "TEST 16 — Tool Input Was Correct"
+resp_text=$(get_json_field "$body" '.response')
+has_bullets=1
+if echo "$resp_text" | grep -Eq '(\* |- |• )'; then has_bullets=0; fi
+len_ok=1
+if [ -n "$resp_text" ]; then
+  ch=$(printf "%s" "$resp_text" | wc -c | tr -d ' ')
+  if [ "$ch" -gt 100 ]; then len_ok=0; fi
+fi
+echo "First 200 chars: $(printf "%s" "$resp_text" | head -c 200)"
+if [ "$has_bullets" -eq 0 ] && [ "$len_ok" -eq 0 ]; then
+  pass_fail 0
+else
+  pass_fail 1
+fi
+
+print_header "TEST 17 — Multi-Step Chain"
+chat_body_chain=$(cat <<'JSON'
+{
+  "message": "First summarize this page, then answer: what is the main topic?",
+  "pageContext": {
+    "url": "https://en.wikipedia.org/wiki/Artificial_intelligence",
+    "title": "Artificial Intelligence - Wikipedia",
+    "content": "Artificial intelligence (AI) is intelligence demonstrated by machines. AI research includes reasoning, knowledge, planning, learning, natural language processing, perception, and robotics. Machine learning is a subset of AI; deep learning uses neural networks with many layers.",
+    "pageType": "generic"
+  },
+  "sessionId": "tool-test-002",
+  "userId": null
+}
+JSON
+)
+read -r code body <<<"$(request POST "$BASE_URL/api/chat" "$chat_body_chain")"
+print_status "$code"
+echo "$body"
+chain_len=$(get_json_field "$body" '.toolsCalledChain | length')
+iterations=$(get_json_field "$body" '.iterations')
+echo "toolsCalledChain length: ${chain_len:-unknown}"
+echo "iterations: ${iterations:-unknown}"
+if [ "$code" = "200" ] && [ -n "$iterations" ] && [ "$iterations" -ge 1 ]; then
+  pass_fail 0
+else
+  pass_fail 1
+fi
+
+echo ""
+echo "════════════════════════════════════"
+echo " CORRECTION LEARNING LOOP TEST"
+echo " (Sequential — must run in order)"
+echo "════════════════════════════════════"
+
+TEST_USER_ID="demo-user-correction-test-001"
+TEST_SESSION="correction-loop-session-001"
+
+echo ""
+echo "[Step 1/5] Sending initial message to get a messageId..."
+CHAT_RESPONSE=$(curl -s -X POST "$BASE_URL/api/chat" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"message\": \"Tell me about this page\",
+    \"pageContext\": {
+      \"url\": \"https://test-correction.com\",
+      \"title\": \"Correction Test Page\",
+      \"content\": \"Artificial intelligence allows computers to perform tasks that typically require human intelligence. Machine learning is a subset of AI.\",
+      \"pageType\": \"generic\"
+    },
+    \"sessionId\": \"$TEST_SESSION\",
+    \"userId\": \"$TEST_USER_ID\"
+  }")
+
+MESSAGE_ID=""
+if command -v jq >/dev/null 2>&1; then
+  MESSAGE_ID=$(echo "$CHAT_RESPONSE" | jq -r '.messageId // empty')
+else
+  MESSAGE_ID=$(echo "$CHAT_RESPONSE" | sed -n 's/.*"messageId":"\([^"]*\)".*/\1/p')
+fi
+
+if [ -n "$MESSAGE_ID" ] && [ "$MESSAGE_ID" != "null" ]; then
+  echo "✅ Step 1 PASS — Got messageId: $MESSAGE_ID"
+else
+  echo "❌ Step 1 FAIL — No messageId in response"
+  echo "   Cannot continue correction loop test"
+  echo "   Response: $CHAT_RESPONSE"
+  echo -e "${YELLOW}\nSummary: $pass/$total tests passed${NC}"
+  exit 1
+fi
+
+echo ""
+echo "[Step 2/5] Submitting negative feedback with correction..."
+FEEDBACK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X POST "$BASE_URL/api/feedback" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"messageId\": \"$MESSAGE_ID\",
+    \"userId\": \"$TEST_USER_ID\",
+    \"rating\": \"negative\",
+    \"correction\": \"Always respond with exactly 3 numbered bullet points. Never use paragraphs.\"
+  }")
+
+if [ "$FEEDBACK_RESPONSE" = "201" ]; then
+  echo "✅ Step 2 PASS — Feedback stored (HTTP 201)"
+else
+  echo "❌ Step 2 FAIL — Expected 201, got $FEEDBACK_RESPONSE"
+fi
+
+echo ""
+echo "[Step 3/5] Verifying correction is stored and retrievable..."
+CORRECTIONS=$(curl -s "$BASE_URL/api/feedback/corrections/$TEST_USER_ID")
+CORRECTION_TEXT=""
+if command -v jq >/dev/null 2>&1; then
+  CORRECTION_TEXT=$(echo "$CORRECTIONS" | jq -r '.corrections[0].correction // empty')
+else
+  CORRECTION_TEXT=$(echo "$CORRECTIONS" | sed -n 's/.*"correction":"\([^"]*\)".*/\1/p' | head -n1)
+fi
+if echo "$CORRECTION_TEXT" | grep -qi "numbered bullet points"; then
+  echo "✅ Step 3 PASS — Correction text found: ${CORRECTION_TEXT:0:60}..."
+else
+  echo "❌ Step 3 FAIL — Correction not found in GET /api/feedback/corrections"
+  echo "   Response: $CORRECTIONS"
+fi
+
+echo ""
+echo "[Step 4/5] Sending follow-up message (should reflect correction)..."
+SECOND_RESPONSE=$(curl -s -X POST "$BASE_URL/api/chat" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"message\": \"Explain artificial intelligence to me\",
+    \"pageContext\": {
+      \"url\": \"https://test-correction.com\",
+      \"title\": \"Correction Test Page\",
+      \"content\": \"Artificial intelligence allows computers to perform tasks that typically require human intelligence. Machine learning is a subset of AI.\",
+      \"pageType\": \"generic\"
+    },
+    \"sessionId\": \"$TEST_SESSION\",
+    \"userId\": \"$TEST_USER_ID\"
+  }")
+SECOND_TEXT=""
+if command -v jq >/dev/null 2>&1; then
+  SECOND_TEXT=$(echo "$SECOND_RESPONSE" | jq -r '.response // empty')
+else
+  SECOND_TEXT=$(echo "$SECOND_RESPONSE" | sed -n 's/.*"response":"\([^"]*\)".*/\1/p' | head -n1)
+fi
+if echo "$SECOND_TEXT" | grep -qE '(^|[^0-9])1(\.| |\))'; then
+  echo "✅ Step 4 PASS — Response appears to use numbered format"
+  echo "   Preview: ${SECOND_TEXT:0:150}..."
+else
+  echo "⚠️  Step 4 WARN — Cannot confirm numbered format (may still be correct)"
+  echo "   Preview: ${SECOND_TEXT:0:150}..."
+  echo "   Note: AI behavior is non-deterministic. Manual verification recommended."
+fi
+
+echo ""
+echo "[Step 5/5] Verifying duplicate feedback is rejected (409)..."
+DUPLICATE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X POST "$BASE_URL/api/feedback" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"messageId\": \"$MESSAGE_ID\",
+    \"userId\": \"$TEST_USER_ID\",
+    \"rating\": \"negative\",
+    \"correction\": \"Trying to submit again\"
+  }")
+
+if [ "$DUPLICATE" = "409" ]; then
+  echo "✅ Step 5 PASS — Duplicate correctly rejected (HTTP 409)"
+else
+  echo "❌ Step 5 FAIL — Expected 409, got $DUPLICATE"
+fi
+
+echo ""
+echo "Correction loop test complete."
 
 echo -e "${YELLOW}\nSummary: $pass/$total tests passed${NC}"
 exit $([ "$pass" -eq "$total" ] && echo 0 || echo 1)

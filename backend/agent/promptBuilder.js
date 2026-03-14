@@ -1,4 +1,4 @@
-import { callClaude, extractTextFromContent } from '../lib/anthropic.js';
+import { callClaude, extractTextFromContent } from '../lib/aiProvider.js';
 
 export async function formatCorrection(rawCorrection) {
   const sys =
@@ -87,6 +87,17 @@ export async function buildSystemPrompt(userPreferences, userCorrections) {
       .map((c) => c.correction.trim());
     const converted = await Promise.all(raw.map((r) => formatCorrection(r)));
     formattedCorrections = converted.filter((r) => r && r.trim().length > 0);
+  }
+  if (Array.isArray(userCorrections) && userCorrections.length > 0) {
+    try {
+      console.log(
+        '[PROMPT BUILDER] Injecting',
+        userCorrections.length,
+        'learned correction(s) into system prompt for this user'
+      );
+      const preview = String(userCorrections[0]?.correction || '').substring(0, 60);
+      console.log('[PROMPT BUILDER] Top correction preview:', `${preview}...`);
+    } catch {}
   }
   const sectionCorrections =
     formattedCorrections.length > 0

@@ -25,7 +25,7 @@ export const corsOptions = {
   credentials: true
 };
 
-function makeLimiter(windowMs, limit) {
+function makeLimiter(windowMs, limit, { skip, keyGenerator } = {}) {
   return rateLimit({
     windowMs,
     limit,
@@ -35,10 +35,37 @@ function makeLimiter(windowMs, limit) {
       const retrySeconds = Math.ceil(windowMs / 1000);
       res.setHeader('Retry-After', String(retrySeconds));
       res.status(429).json({ error: 'Too many requests', retryAfter: `${retrySeconds} seconds` });
-    }
+    },
+    skip: typeof skip === 'function' ? skip : undefined,
+    keyGenerator:
+      typeof keyGenerator === 'function'
+        ? keyGenerator
+        : (req) => {
+            return req.ip;
+          }
   });
 }
 
-export const generalLimiter = makeLimiter(15 * 60 * 1000, 100);
-export const chatLimiter = makeLimiter(60 * 1000, 20);
-export const feedbackLimiter = makeLimiter(15 * 60 * 1000, 30);
+export const generalLimiter = makeLimiter(15 * 60 * 1000, 100, {
+  skip: (req) => req.path === '/health'
+});
+export const chatLimiter = makeLimiter(60 * 1000, 30, {
+  skip: (req) => req.path === '/health',
+  keyGenerator: (req) => {
+    try {
+      const id = req.body && req.body.userId;
+      if (id && typeof id === 'string' && id.trim().length > 0) return `user:${id}`;
+    } catch {}
+    return req.ip;
+  }
+});
+export const feedbackLimiter = makeLimiter(15 * 60 * 1000, 30, {
+  skip: (req) => req.path === '/health',
+  keyGenerator: (req) => {
+    try {
+      const id = req.body && req.body.userId;
+      if (id && typeof id === 'string' && id.trim().length > 0) return `user:${id}`;
+    } catch {}
+    return req.ip;
+  }
+});

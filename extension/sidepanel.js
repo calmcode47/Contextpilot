@@ -7,6 +7,7 @@ const emptyPageType = document.getElementById('emptyPageType');
 const typingEl = document.getElementById('typing');
 const presetsEl = document.getElementById('presets');
 const charHint = document.getElementById('charHint');
+const gearBtn = document.querySelector('.cp-gear');
 
 const state = {
   sessionId: null,
@@ -14,7 +15,15 @@ const state = {
   pageContext: null,
   messages: [],
   isLoading: false,
-  currentPageType: 'generic'
+  currentPageType: 'generic',
+  sessionTokens: 0,
+  lastResponseMs: 0,
+  debugMode: false,
+  lastApiRequest: null,
+  lastApiResponse: null,
+  lastResponseTimeMs: null,
+  errorLog: [],
+  totalTokensThisSession: 0
 };
 
 const PRESET_COMMANDS = {
@@ -67,19 +76,85 @@ function markdownToHtml(md) {
   return div.innerHTML;
 }
 
-function renderMessage(role, content, toolUsed, messageId, animated = true) {
+function formatTokens(n) {
+  const x = Number(n || 0);
+  if (x >= 1000) return `${(x / 1000).toFixed(1)}k`;
+  return String(x);
+}
+
+function buildMetadataBar(toolsChain, iterations, usage) {
+  const hasTools = Array.isArray(toolsChain) && toolsChain.length > 0;
+  const hasIterations = typeof iterations === 'number' && !Number.isNaN(iterations);
+  const totalTokens =
+    usage && (Number(usage.inputTokens || 0) + Number(usage.outputTokens || 0));
+  const hasTokens = !!totalTokens;
+  if (!hasTools && !hasIterations && !hasTokens) {
+    return null;
+  }
+  const meta = document.createElement('div');
+  meta.className = 'message-metadata';
+  const left = document.createElement('span');
+  left.textContent = '🔧';
+  meta.appendChild(left);
+  if (hasTools) {
+    for (let i = 0; i < toolsChain.length; i++) {
+      const p = document.createElement('span');
+      p.className = 'tool-pill';
+      p.textContent = toolsChain[i];
+      meta.appendChild(p);
+      if (i < toolsChain.length - 1) {
+        const arrow = document.createElement('span');
+        arrow.className = 'tool-arrow';
+        arrow.textContent = '→';
+        meta.appendChild(arrow);
+      }
+    }
+  } else {
+    const p = document.createElement('span');
+    p.className = 'tool-pill';
+    p.textContent = 'direct answer';
+    meta.appendChild(p);
+  }
+  if (hasIterations) {
+    const iter = document.createElement('span');
+    iter.textContent = `· ${Number(iterations)} iteration${Number(iterations) === 1 ? '' : 's'}`;
+    meta.appendChild(iter);
+  }
+  if (hasTokens) {
+    const tok = document.createElement('span');
+    tok.textContent = `· ${formatTokens(totalTokens)} tokens`;
+    meta.appendChild(tok);
+  }
+  return meta;
+}
+
+/**
+ * Renders a chat message bubble in the side panel.
+ *
+ * @param {string} role                     'user' or 'assistant'
+ * @param {string} content                  Message text (markdown for assistant)
+ * @param {string|null} toolUsed            Last tool used, or null for direct answers
+ * @param {string|null} messageId           UUID for feedback targeting
+ * @param {string[]=} toolsCalledChain      Ordered array of tools invoked
+ * @param {number|null=} iterations         Agent loop iteration count
+ * @param {object|null=} usage              { inputTokens, outputTokens }
+ * @param {boolean=} animated               true for new messages, false for history
+ */
+function renderMessage(role, content, toolUsed, messageId, toolsCalledChain, iterations, usage, animated = true) {
+  const safeToolsChain = Array.isArray(toolsCalledChain) ? toolsCalledChain : (toolUsed ? [toolUsed] : []);
+  const safeIterations = typeof iterations === 'number' ? iterations : null;
+  const safeUsage = usage && typeof usage === 'object' ? usage : null;
+  const safeAnimated = typeof animated === 'boolean' ? animated : true;
   const d = document.createElement('div');
-  d.className = `cp-msg ${role === 'user' ? 'cp-user' : 'cp-assistant'}${animated ? '' : ' cp-static'}`;
+  d.className = `cp-msg ${role === 'user' ? 'cp-user' : 'cp-assistant'}${safeAnimated ? '' : ' cp-static'}`;
   if (role === 'assistant') {
     const body = document.createElement('div');
     body.className = 'markdown-body';
     body.innerHTML = markdownToHtml(content || '(no response)');
     d.appendChild(body);
-    if (toolUsed) {
-      const tool = document.createElement('div');
-      tool.className = 'cp-tool';
-      tool.textContent = `🔧 Used: ${toolUsed}`;
-      d.appendChild(tool);
+    const metaEl = buildMetadataBar(safeToolsChain, safeIterations, safeUsage);
+    if (metaEl) {
+      d.appendChild(metaEl);
     }
     const fb = document.createElement('div');
     fb.className = 'cp-feedback';
@@ -196,7 +271,7 @@ async function getPagePayload() {
   const tab = await getActiveTab();
   if (!tab?.id) throw new Error('No active tab');
   try {
-    const res = await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_CONTENT' });
+    const res = await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_CONTENT', forceRefresh: true });
     if (res?.success && res.data) return res.data;
   } catch {}
   try {
@@ -262,32 +337,58 @@ function setPageBadge(pt) {
   setTimeout(() => pageBadge.classList.remove('cp-badge-pulse'), 650);
 }
 
-async function callBackendAPI(endpoint, method, body) {
-  const url = `${CONFIG.API_BASE_URL}${endpoint}`;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), CONFIG.REQUEST_TIMEOUT_MS);
+function markContentFresh() {
   try {
-    const res = await fetch(url, {
-      method,
+    pageBadge.classList.add('content-fresh');
+    setTimeout(() => pageBadge.classList.remove('content-fresh'), 2000);
+  } catch {}
+}
+
+async function callBackendAPI(endpoint, method, body) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
+  try {
+    const options = {
+      method: method || 'GET',
       headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: ctrl.signal
-    });
-    let data = null;
+      signal: controller.signal
+    };
+    if (body) options.body = JSON.stringify(body);
+    const response = await fetch(`${CONFIG.API_BASE_URL}${endpoint}`, options);
+    clearTimeout(timeoutId);
+    if (response.status === 429) {
+      const retryAfter = response.headers.get('Retry-After') || '60';
+      return { success: false, code: 429, error: `Rate limited. Please wait ${retryAfter} seconds.` };
+    }
+    if (response.status === 401) {
+      return { success: false, code: 401, error: 'Authentication required.' };
+    }
+    if (response.status >= 500) {
+      let errorDetail = 'Server error';
+      try {
+        const errBody = await response.json();
+        errorDetail = errBody.details || errBody.error || errorDetail;
+      } catch {}
+      return { success: false, code: response.status, error: `Agent error: ${errorDetail}` };
+    }
+    if (!response.ok) {
+      return { success: false, code: response.status, error: `Request failed (${response.status})` };
+    }
     try {
-      data = await res.json();
+      const data = await response.json();
+      return { success: true, data };
     } catch {
-      data = null;
+      return { success: false, code: 0, error: 'Invalid response format from server.' };
     }
-    if (!res.ok) {
-      const msg = data?.error || data?.message || `HTTP ${res.status}`;
-      return { success: false, status: res.status, error: msg, data };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      return { success: false, code: 0, error: `Request timed out after ${CONFIG.REQUEST_TIMEOUT_MS / 1000}s. The AI is taking too long — try a shorter message.` };
     }
-    return { success: true, status: res.status, data };
-  } catch (e) {
-    return { success: false, status: 0, error: 'Network error or timeout' };
-  } finally {
-    clearTimeout(t);
+    if (!navigator.onLine) {
+      return { success: false, code: 0, error: 'No internet connection.' };
+    }
+    return { success: false, code: 0, error: `Network error: ${err.message}` };
   }
 }
 
@@ -342,7 +443,16 @@ async function loadChatHistory() {
   chatEl.querySelectorAll('.cp-msg').forEach((n) => n.remove());
   emptyState.classList.add('hidden');
   result.data.messages.forEach((msg) => {
-    renderMessage(msg.role, msg.content, msg.tool_used ?? null, msg.id ?? null, false);
+    renderMessage(
+      msg.role,
+      msg.content,
+      msg.tool_used || null,
+      msg.id || null,
+      msg.tool_used ? [msg.tool_used] : [],
+      null,
+      null,
+      false
+    );
   });
   state.messages = result.data.messages;
   scrollToBottom(false);
@@ -350,6 +460,11 @@ async function loadChatHistory() {
 }
 
 async function initializePanel() {
+  const backendOk = await checkBackendConnectivity();
+  if (!backendOk) {
+    showConnectionError();
+    return;
+  }
   try {
     state.sessionId = await getSessionId();
     state.userId = null;
@@ -377,44 +492,78 @@ async function initializePanel() {
   }
 }
 
+function showConnectionError() {
+  emptyState.classList.add('hidden');
+  chatEl.innerHTML = `
+    <div class="connection-error">
+      <div class="error-icon">⚠️</div>
+      <div class="error-title">Backend Offline</div>
+      <div class="error-detail">Cannot reach ${CONFIG.API_BASE_URL}</div>
+      <div class="error-hint">Make sure the ContextPilot server is running</div>
+      <button class="retry-btn">Retry Connection</button>
+    </div>
+  `;
+  const btn = chatEl.querySelector('.retry-btn');
+  btn.addEventListener('click', () => location.reload());
+}
 async function sendMessage(userMessage) {
   const text = String(userMessage || '').trim();
   if (!text || state.isLoading) return;
+  state.isLoading = true;
+  showTypingIndicator();
+  state.lastSentMessage = text;
   emptyState.classList.add('hidden');
-  inputEl.value = '';
-  autoResize();
-  sendBtn.disabled = true;
-  const userEntry = { role: 'user', content: text, toolUsed: null, messageId: null, timestamp: Date.now() };
-  state.messages.push(userEntry);
-  renderMessage('user', text, null, null);
-  setLoading(true);
-  const body = {
-    message: text,
-    pageContext: state.pageContext,
-    sessionId: state.sessionId,
-    userId: state.userId
-  };
-  const resp = await callBackendAPI('/api/chat', 'POST', body);
-  if (resp.success) {
-    const d = resp.data || {};
+  addUserMessage(text);
+  clearInput();
+  try {
+    const body = {
+      message: text,
+      pageContext: state.pageContext,
+      sessionId: state.sessionId,
+      userId: state.userId
+    };
+    const t0 = performance.now();
+    const result = await callBackendAPI('/api/chat', 'POST', body);
+    const t1 = performance.now();
+    if (!result.success) {
+      addErrorMessage(result.error || 'The AI agent encountered an error. Please try again.');
+      const err = { time: new Date().toISOString(), error: result.error || 'error' };
+      state.errorLog.unshift(err);
+      state.errorLog = state.errorLog.slice(0, 5);
+      updateDebugPanel();
+      return;
+    }
+    const d = result.data || {};
+    state.lastResponseTimeMs = Math.round(t1 - t0);
+    state.lastApiResponse = d;
+    state.totalTokensThisSession += Number((d.usage && d.usage.inputTokens) || 0) + Number((d.usage && d.usage.outputTokens) || 0);
     const assistantEntry = {
       role: 'assistant',
       content: d.response || '(no response)',
       toolUsed: d.toolUsed ?? null,
       messageId: d.messageId ?? null,
+      toolsCalledChain: d.toolsCalledChain || [],
+      iterations: d.iterations ?? 0,
+      usage: d.usage || { inputTokens: 0, outputTokens: 0 },
       timestamp: Date.now()
     };
     state.messages.push(assistantEntry);
-    renderMessage('assistant', assistantEntry.content, assistantEntry.toolUsed, assistantEntry.messageId);
-  } else {
-    let msg = 'The AI agent encountered an error. Please try again.';
-    if (resp.status === 0) msg = 'Connection failed. Is the ContextPilot server running?';
-    else if (resp.status === 429) msg = 'Too many requests. Please wait a moment.';
-    else if (resp.status >= 500) msg = 'The AI agent encountered an error. Please try again.';
-    renderMessage('assistant', msg, null, null);
+    const usedTokens = Number((assistantEntry.usage && assistantEntry.usage.inputTokens) || 0) + Number((assistantEntry.usage && assistantEntry.usage.outputTokens) || 0);
+    state.sessionTokens += usedTokens;
+    state.lastResponseMs = state.lastResponseTimeMs;
+    renderMessage('assistant', assistantEntry.content, assistantEntry.toolUsed, assistantEntry.messageId, assistantEntry.toolsCalledChain, assistantEntry.iterations, assistantEntry.usage);
+    updateDevPanel();
+    updateDebugPanel();
+  } catch (unexpectedError) {
+    addErrorMessage('An unexpected error occurred. Please try again.');
+    console.error('[ContextPilot] Unexpected error in sendMessage:', unexpectedError);
+  } finally {
+    state.isLoading = false;
+    hideTypingIndicator();
+    scrollToBottom(true);
+    focusInput();
+    sendBtn.disabled = false;
   }
-  setLoading(false);
-  inputEl.focus();
 }
 
 function autoResize() {
@@ -440,3 +589,166 @@ inputEl.addEventListener('keydown', (e) => {
 (async function init() {
   await initializePanel();
 })();
+
+function ensureDevPanel() {
+  let dev = document.getElementById('cp-devpanel');
+  if (!dev) {
+    dev = document.createElement('div');
+    dev.id = 'cp-devpanel';
+    dev.className = 'cp-devpanel';
+    const app = document.querySelector('.cp-app');
+    const composer = document.querySelector('.cp-composer');
+    app.insertBefore(dev, composer);
+  }
+  return dev;
+}
+
+function updateDevPanel() {
+  const dev = ensureDevPanel();
+  const totalMessages = state.messages.length;
+  const url = CONFIG.API_BASE_URL;
+  dev.innerHTML = `
+    <div class="cp-devrow">sessionId: ${state.sessionId || 'null'}</div>
+    <div class="cp-devrow">messages: ${totalMessages}</div>
+    <div class="cp-devrow">sessionTokens: ${state.sessionTokens}</div>
+    <div class="cp-devrow">backend: ${url}</div>
+    <div class="cp-devrow">lastResponseMs: ${state.lastResponseMs}</div>
+  `;
+}
+
+function toggleDevPanel() {
+  const dev = ensureDevPanel();
+  const show = !dev.classList.contains('show');
+  if (show) {
+    updateDevPanel();
+    dev.classList.add('show');
+  } else {
+    dev.classList.remove('show');
+  }
+}
+
+if (gearBtn) {
+  gearBtn.addEventListener('click', toggleDevPanel);
+}
+
+function ensureDebugPanel() {
+  let dp = document.getElementById('debug-panel');
+  if (!dp) {
+    dp = document.createElement('div');
+    dp.id = 'debug-panel';
+    dp.className = 'debug-panel';
+    dp.innerHTML = `
+      <div class="debug-header"><span>⚙ ContextPilot Debug</span><span id="debug-close" class="debug-close">✕</span></div>
+      <div class="debug-section"><div class="debug-label">SESSION</div><div id="debug-session" class="debug-value mono"></div></div>
+      <div class="debug-section"><div class="debug-label">LAST RESPONSE TIME</div><div id="debug-response-time" class="debug-value mono"></div></div>
+      <div class="debug-section"><div class="debug-label">SESSION TOKENS</div><div id="debug-tokens" class="debug-value mono"></div></div>
+      <div class="debug-section"><div class="debug-label">LAST API RESPONSE</div><pre id="debug-last-response" class="debug-json"></pre></div>
+      <div class="debug-section"><div class="debug-label">ERROR LOG</div><div id="debug-errors" class="debug-value mono"></div></div>
+      <div class="debug-section"><div class="debug-label">BACKEND</div><div id="debug-backend" class="debug-value mono"></div></div>
+    `;
+    document.body.appendChild(dp);
+    const close = dp.querySelector('#debug-close');
+    close.addEventListener('click', () => {
+      dp.classList.remove('visible');
+      state.debugMode = false;
+    });
+  }
+  return dp;
+}
+
+function updateDebugPanel() {
+  const dp = ensureDebugPanel();
+  const sEl = dp.querySelector('#debug-session');
+  const rEl = dp.querySelector('#debug-response-time');
+  const tEl = dp.querySelector('#debug-tokens');
+  const jEl = dp.querySelector('#debug-last-response');
+  const eEl = dp.querySelector('#debug-errors');
+  const bEl = dp.querySelector('#debug-backend');
+  sEl.textContent = `${state.sessionId || 'null'} | pageType=${state.currentPageType}`;
+  rEl.textContent = `${state.lastResponseTimeMs ?? 0} ms`;
+  tEl.textContent = String(state.totalTokensThisSession || 0);
+  try {
+    jEl.textContent = JSON.stringify(state.lastApiResponse || {}, null, 2);
+  } catch {
+    jEl.textContent = String(state.lastApiResponse || '');
+  }
+  eEl.textContent = (state.errorLog || []).map((x) => `${x.time} — ${x.error}`).join('\n');
+  bEl.textContent = CONFIG.API_BASE_URL;
+}
+
+function toggleDebugPanel() {
+  const dp = ensureDebugPanel();
+  state.debugMode = !state.debugMode;
+  if (state.debugMode) {
+    updateDebugPanel();
+    dp.classList.add('visible');
+  } else {
+    dp.classList.remove('visible');
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'D') {
+    toggleDebugPanel();
+  }
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  try {
+    if (message && message.type === 'PAGE_CONTENT_UPDATED' && message.data) {
+      state.pageContext = message.data;
+      state.currentPageType = message.data.pageType;
+      setPageBadge(message.data.pageType);
+      renderPresetCommands(message.data.pageType);
+      if (typeof markContentFresh === 'function') markContentFresh();
+    }
+  } catch {}
+});
+function addErrorMessage(errorText) {
+  const errorEl = document.createElement('div');
+  errorEl.className = 'message-error';
+  const icon = document.createElement('span');
+  icon.className = 'error-icon';
+  icon.textContent = '⚠';
+  const text = document.createElement('span');
+  text.className = 'error-text';
+  text.textContent = errorText;
+  const retry = document.createElement('button');
+  retry.className = 'error-retry';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', () => retryLastMessage());
+  errorEl.appendChild(icon);
+  errorEl.appendChild(text);
+  errorEl.appendChild(retry);
+  chatEl.appendChild(errorEl);
+}
+
+function retryLastMessage() {
+  if (state.lastSentMessage) {
+    sendMessage(state.lastSentMessage);
+  }
+}
+
+function showTypingIndicator() {
+  typingEl.classList.remove('hidden');
+}
+
+function hideTypingIndicator() {
+  typingEl.classList.add('hidden');
+}
+
+function addUserMessage(text) {
+  const userEntry = { role: 'user', content: text, toolUsed: null, messageId: null, timestamp: Date.now() };
+  state.messages.push(userEntry);
+  renderMessage('user', text, null, null, null, null, null);
+}
+
+function clearInput() {
+  inputEl.value = '';
+  autoResize();
+  sendBtn.disabled = true;
+}
+
+function focusInput() {
+  inputEl.focus();
+}

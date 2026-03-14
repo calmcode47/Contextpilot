@@ -163,3 +163,12 @@ What it produces: A structured explanation: (1) what it is, (2) why it matters, 
     }
   }
 ];
+
+export function toGeminiTools(anthropicTools) {
+  if (!Array.isArray(anthropicTools)) return [];
+  return anthropicTools.map((tool) => ({
+    name: tool?.name,
+    description: tool?.description,
+    parameters: tool?.input_schema
+  }));
+}

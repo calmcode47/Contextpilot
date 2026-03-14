@@ -1,5 +1,12 @@
-import { callClaude, extractTextFromContent } from '../lib/anthropic.js';
+/**
+ * agent/toolExecutor.js
+ * LLM-as-executor tool implementations.
+ * Each tool makes a focused AI sub-call with a task-specific system prompt.
+ * Returns string results consumed by the orchestrator tool-result loop.
+ */
+import { callClaude, extractTextFromContent } from '../lib/aiProvider.js';
 
+/** Validates whether the requested tool is appropriate for the current page context. */
 export function validateToolContext(toolName, pageContext) {
   const url = String(pageContext?.url || '').toLowerCase();
   const pageType = String(pageContext?.pageType || '').toLowerCase();
@@ -46,7 +53,9 @@ export async function executeTool(toolName, toolInput, pageContext) {
       case 'summarize_page': {
         try {
           const focus = typeof toolInput?.focus === 'string' ? toolInput.focus : 'main_points';
-          console.log('[TOOL EXECUTING] summarize_page', { focus, page: { title: pageContext?.title, url: pageContext?.url } });
+          console.log(
+            `[TOOL] Executing summarize_page — focus: ${focus}, url: ${pageContext?.url || ''}`
+          );
           const systemPrompt =
             'You are an expert content analyst. Produce structured, scannable summaries. Be concise and precise.';
           const userMessage = [
@@ -87,7 +96,9 @@ export async function executeTool(toolName, toolInput, pageContext) {
         try {
           const tone = typeof toolInput?.tone === 'string' ? toolInput.tone : 'formal';
           const intent = typeof toolInput?.intent === 'string' ? toolInput.intent : 'respond appropriately';
-          console.log('[TOOL EXECUTING] draft_email_reply', { tone, intent });
+          console.log(
+            `[TOOL] Executing draft_email_reply — tone: ${tone}, intent: ${intent}`
+          );
           const systemPrompt =
             'You are an expert email writer. Write professional, natural-sounding email replies. Match the requested tone exactly. Never add placeholder text like [Your Name] — write a complete, ready-to-send reply.';
           const userMessage = [
@@ -128,7 +139,9 @@ export async function executeTool(toolName, toolInput, pageContext) {
       case 'answer_question': {
         try {
           const question = typeof toolInput?.question === 'string' ? toolInput.question : '';
-          console.log('[TOOL EXECUTING] answer_question', { question });
+          console.log(
+            `[TOOL] Executing answer_question — question: ${question ? question.slice(0, 80) : ''}`
+          );
           const systemPrompt =
             'You are a precise research assistant. Answer questions strictly based on the provided source content. If the answer is not in the content, say so clearly — never fabricate. Cite specific parts of the content when relevant.';
           const userMessage = [
@@ -169,7 +182,9 @@ export async function executeTool(toolName, toolInput, pageContext) {
       case 'extract_structured_data': {
         try {
           const dataType = typeof toolInput?.dataType === 'string' ? toolInput.dataType : 'list';
-          console.log('[TOOL EXECUTING] extract_structured_data', { dataType });
+          console.log(
+            `[TOOL] Executing extract_structured_data — dataType: ${dataType}`
+          );
           const systemPrompt =
             'You are a data extraction specialist. Extract clean, well-organized structured data from raw webpage content. Format output as clean markdown tables or labeled lists. Never guess or infer data that is not explicitly present.';
           const userMessage = [
@@ -214,7 +229,9 @@ export async function executeTool(toolName, toolInput, pageContext) {
         try {
           const purpose = typeof toolInput?.purpose === 'string' ? toolInput.purpose : 'connection_request';
           const tone = typeof toolInput?.tone === 'string' ? toolInput.tone : 'formal';
-          console.log('[TOOL EXECUTING] generate_outreach_message', { purpose, tone });
+          console.log(
+            `[TOOL] Executing generate_outreach_message — purpose: ${purpose}, tone: ${tone}`
+          );
           const systemPrompt =
             'You are an expert at writing personalized professional outreach messages. You study LinkedIn profiles carefully and craft messages that feel genuinely researched — never generic. You reference specific details from the profile.';
           const userMessage = [
@@ -255,7 +272,9 @@ export async function executeTool(toolName, toolInput, pageContext) {
           const tone = typeof toolInput?.tone === 'string' ? toolInput.tone : 'professional';
           const candidateBackground =
             typeof toolInput?.candidateBackground === 'string' ? toolInput.candidateBackground : '';
-          console.log('[TOOL EXECUTING] generate_cover_letter', { tone });
+          console.log(
+            `[TOOL] Executing generate_cover_letter — tone: ${tone}`
+          );
           const systemPrompt =
             'You are a senior career coach who writes cover letters that get interviews. Your letters are specific, confident, and demonstrate real understanding of the role. You never use filler phrases like \'I am a hard worker\' or \'I am passionate about\'. Every sentence earns its place.';
           const userMessage = [
@@ -305,7 +324,9 @@ export async function executeTool(toolName, toolInput, pageContext) {
           const targetAudience = typeof toolInput?.targetAudience === 'string' ? toolInput.targetAudience : 'beginner';
           const conceptToExplain =
             typeof toolInput?.conceptToExplain === 'string' ? toolInput.conceptToExplain : '';
-          console.log('[TOOL EXECUTING] explain_concept', { targetAudience, conceptToExplain });
+          console.log(
+            `[TOOL] Executing explain_concept — audience: ${targetAudience}, concept: ${conceptToExplain ? conceptToExplain.slice(0, 60) : ''}`
+          );
           const systemPrompt =
             'You are a world-class technical educator. You explain complex concepts at exactly the right level for your audience. You use precise analogies, concrete examples, and avoid both dumbing things down and unnecessary jargon. Your explanations always start with what the thing IS, then explain why it matters, then show how it works.';
           const userMessage = [

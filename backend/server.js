@@ -6,6 +6,7 @@ import cors from 'cors';
 
 import config from './lib/config.js';
 import { corsOptions, generalLimiter, chatLimiter, feedbackLimiter } from './middleware/security.js';
+import { errorHandler } from './middleware/errorHandler.js';
 
 import chatRoutes from './routes/chat.js';
 import feedbackRoutes from './routes/feedback.js';
@@ -16,9 +17,22 @@ const app = express();
 
 console.log(`AI provider: ${config.AI_PROVIDER} model: ${config.AI_PROVIDER === 'anthropic' ? config.ANTHROPIC_MODEL : config.GEMINI_MODEL}`);
 
+if (config.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
 app.use(generalLimiter);
 app.use(cors(corsOptions));
-app.use(express.json({ limit: '10mb' }));
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.removeHeader('X-Powered-By');
+  next();
+});
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
 app.use((req, res, next) => {
   const started = process.hrtime.bigint();
@@ -50,18 +64,28 @@ app.use((req, res, next) => {
   });
 });
 
-app.use((err, req, res, next) => {
-  const status = typeof err.status === 'number' ? err.status : 500;
-  const message = err.message || 'Internal Server Error';
-  res.status(status).json({
-    error: status === 500 ? 'Internal Server Error' : 'Error',
-    message
-  });
-});
+app.use(errorHandler);
 
 const PORT = config.PORT;
 const ENV = config.NODE_ENV;
 
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED_REJECTION]', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT_EXCEPTION]', err);
+  process.exit(1);
+});
+
 app.listen(PORT, () => {
-  console.log(`ContextPilot API listening on port ${PORT} (${ENV})`);
+  console.log(`
+╔════════════════════════════════════════╗
+║         ContextPilot API Server        ║
+╠════════════════════════════════════════╣
+║  Environment: ${String(ENV).padEnd(24)}║
+║  Port:        ${String(PORT).padEnd(24)}║
+║  AI Provider: ${String(config.AI_PROVIDER || 'gemini').padEnd(24)}║
+║  Supabase:    connected                ║
+╚════════════════════════════════════════╝
+`);
 });

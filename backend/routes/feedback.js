@@ -30,7 +30,8 @@ router.post(
 
     const learned = rating === 'negative' && typeof correction === 'string' && correction.trim().length > 0;
     if (learned) {
-      console.log(`[FEEDBACK] New correction learned for user: ${userId} — ${correction.trim()}`);
+      const length = correction.trim().length;
+      console.log(`[FEEDBACK ROUTE] Correction learned — userId: ${userId}, length: ${length}`);
     }
 
     return res.status(201).json({

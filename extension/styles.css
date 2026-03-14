@@ -43,6 +43,9 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarel
 .cp-thumb:hover { border-color: var(--accent); color: var(--accent); }
 .cp-thumb.selected-up { border-color: #16a34a; color: #16a34a; transform: scale(1.02); }
 .cp-thumb.selected-down { border-color: #dc2626; color: #dc2626; transform: scale(1.02); }
+.message-metadata { font-size: 11px; color: #888; margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tool-pill { background: #f0f4ff; color: #4361ee; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 500; }
+.tool-arrow { color: #bbb; font-size: 10px; }
 
 /* History skeleton */
 .cp-skeleton { display: grid; gap: 10px; padding: 12px; }
@@ -96,6 +99,33 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarel
 .cp-assistant .markdown-body code { background: #f3f4f6; padding: 2px 4px; border-radius: 4px; }
 .cp-assistant .markdown-body pre { background: #f3f4f6; padding: 8px; border-radius: 6px; overflow-x: auto; }
 
+/* Developer panel */
+.cp-devpanel { max-height: 0; overflow: hidden; background: #1a1a1a; color: #00ff88; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 0 10px; border-top: 1px solid #111; transition: max-height .25s ease; }
+.cp-devpanel.show { max-height: 160px; padding: 8px 10px; }
+.cp-devrow { margin: 4px 0; }
+
+/* Debug panel */
+.debug-panel { position: fixed; bottom: 0; left: 0; right: 0; height: 55%; background: #0d1117; color: #58a6ff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "JetBrains Mono", "Courier New", monospace; font-size: 11px; overflow-y: auto; z-index: 1000; border-top: 2px solid #30363d; transform: translateY(100%); transition: transform .25s ease; }
+.debug-panel.visible { transform: translateY(0); }
+.debug-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-bottom: 1px solid #30363d; }
+.debug-close { cursor: pointer; color: #8b949e; }
+.debug-section { padding: 8px 10px; }
+.debug-label { color: #8b949e; font-size: 10px; margin-bottom: 4px; }
+.debug-value { color: #58a6ff; }
+.debug-json { color: #a5d6ff; white-space: pre-wrap; word-break: break-all; margin: 0; }
+
+/* Connection error */
+.connection-error { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 12px; padding: 32px; text-align: center; }
+.error-icon { font-size: 48px; }
+.error-title { font-weight: 600; font-size: 16px; color: #e53e3e; }
+.error-detail { font-size: 12px; color: #718096; font-family: monospace; }
+.error-hint { font-size: 13px; color: #4a5568; }
+.retry-btn { margin-top: 8px; padding: 8px 24px; background: #4361ee; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+
+/* Inline error message bubble */
+.message-error { background: #fff5f5; border: 1px solid #fed7d7; border-radius: 8px; padding: 10px 14px; margin: 8px 0; display: flex; align-items: center; gap: 8px; font-size: 13px; color: #c53030; }
+.error-retry { margin-left: auto; font-size: 12px; color: #4361ee; background: none; border: 1px solid #4361ee; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+
 @keyframes msgIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
@@ -122,4 +152,19 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarel
   0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,.25); }
   60% { transform: scale(1.05); box-shadow: 0 0 0 6px rgba(255,255,255,0); }
   100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,0); }
+}
+
+/* Freshness indicator on page badge */
+.content-fresh::after {
+  content: ' ●';
+  color: #48bb78;
+  font-size: 10px;
+  line-height: 1;
+  vertical-align: middle;
+  animation: cp-fadeout 2s forwards;
+}
+@keyframes cp-fadeout {
+  0% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
 }

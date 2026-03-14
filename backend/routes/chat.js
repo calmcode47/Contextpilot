@@ -13,7 +13,17 @@ const router = Router();
 router.post('/', async (req, res, next) => {
   try {
     const { message, pageContext, sessionId, userId } = req.body || {};
-    const msgStr = typeof message === 'string' ? message.trim() : '';
+    let msgStr = typeof message === 'string' ? message : '';
+    const hadHtml = /<[^>]*>/i.test(msgStr);
+    if (hadHtml) {
+      console.warn('[SECURITY] message contained HTML tags; stripping');
+    }
+    msgStr = msgStr.replace(/<[^>]*>/g, '').replace(/\0/g, '');
+    if (msgStr.length > 2000) {
+      console.warn('[SECURITY] message length exceeded 2000; truncating');
+      msgStr = msgStr.slice(0, 2000);
+    }
+    msgStr = msgStr.trim();
     const details = [];
     if (!msgStr) details.push('message is required and must be a non-empty string');
     if (!pageContext || typeof pageContext !== 'object') {
@@ -29,14 +39,19 @@ router.post('/', async (req, res, next) => {
 
     const { url, title, content, pageType } = pageContext;
     console.log(
-      `[CHAT] userId=${userId || 'anonymous'} sessionId=${sessionId} pageType=${pageType || 'unknown'} messageLen=${msgStr.length}`
+      `[CHAT ROUTE] Request received — userId: ${userId || 'anonymous'}, sessionId: ${sessionId}, pageType: ${pageType || 'unknown'}, messageLen: ${msgStr.length}`
     );
 
-    let sanitizedContent = content.trim();
+    let sanitizedContent = String(content || '').replace(/\0/g, '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
     if (sanitizedContent.length > config.MAX_PAGE_CONTENT_CHARS) {
       const originalLen = sanitizedContent.length;
       sanitizedContent = sanitizedContent.slice(0, config.MAX_PAGE_CONTENT_CHARS);
-      console.warn(`[CHAT] pageContext.content truncated from ${originalLen} to ${sanitizedContent.length}`);
+      console.warn(
+        `[CHAT ROUTE] Content truncated — from: ${originalLen}, to: ${sanitizedContent.length}`
+      );
+    }
+    if (/(ignore previous instructions|you are now)/i.test(sanitizedContent)) {
+      console.warn('[SECURITY] possible prompt injection phrases detected in page content');
     }
 
     let userPreferences = null;

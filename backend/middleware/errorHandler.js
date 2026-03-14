@@ -1,10 +1,19 @@
+function sanitizeErrorMessage(message, isProduction) {
+  if (!isProduction) return message;
+  let clean = String(message || '').replace(/(?:\/[\w.-]+)+/g, '[path]');
+  clean = clean.replace(/[A-Z]:\\[\w\\.-]+/gi, '[path]');
+  clean = clean.replace(/[A-Za-z0-9_-]{20,}/g, '[redacted]');
+  return clean;
+}
+
 export function errorHandler(err, req, res, next) {
   const statusCode = err?.status || err?.statusCode || 500;
-  const message = err?.message || 'Internal server error';
+  const rawMessage = err?.message || 'Internal server error';
   const ts = new Date().toISOString();
-  const isDev = (process.env.NODE_ENV || 'development') !== 'production';
-  if (isDev) {
-    console.error(`[${ts}] ${req.method} ${req.originalUrl} ${statusCode} ${message}`);
+  const isProduction = (process.env.NODE_ENV || 'development') === 'production';
+  const message = sanitizeErrorMessage(rawMessage, isProduction);
+  if (!isProduction) {
+    console.error(`[${ts}] ${req.method} ${req.originalUrl} ${statusCode} ${rawMessage}`);
     if (err?.stack) console.error(err.stack);
   } else {
     console.error(`[${ts}] ${req.method} ${req.originalUrl} ${statusCode} ${message}`);
@@ -14,7 +23,7 @@ export function errorHandler(err, req, res, next) {
     statusCode,
     timestamp: ts
   };
-  if (isDev && err?.stack) {
+  if (!isProduction && err?.stack) {
     body.stack = err.stack;
   }
   res.status(statusCode).json(body);

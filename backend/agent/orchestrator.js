@@ -1,8 +1,28 @@
-import { callClaude, extractTextFromContent, extractToolUseFromContent } from '../lib/anthropic.js';
+/** 
+ * agent/orchestrator.js 
+ * Multi-step agent loop for ContextPilot. 
+ * Orchestrates tool selection, execution, and response synthesis. 
+ * Supports up to MAX_ITERATIONS tool calls per request. 
+ */
+import { callClaude, extractTextFromContent, extractToolUseFromContent } from '../lib/aiProvider.js';
 import { buildSystemPrompt } from './promptBuilder.js';
 import { AGENT_TOOLS } from './tools.js';
 import { executeTool } from './toolExecutor.js';
 
+const VERBOSE = process.env.VERBOSE_AGENT === 'true';
+function agentLog(label, data) {
+  if (!VERBOSE) return;
+  console.log('\n============================================================');
+  console.log(`[AGENT DIAGNOSTIC] ${label}`);
+  try {
+    console.log(JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.log(String(data));
+  }
+  console.log('============================================================');
+}
+
+/** Runs the agent loop and returns the final response with metadata. */
 export async function runAgent({
   message,
   pageContext,
@@ -12,8 +32,11 @@ export async function runAgent({
   userCorrections
 }) {
   try {
-    console.log(`[AGENT START] sessionId: ${sessionId} | pageType: ${pageContext?.pageType || 'unknown'} | message: "${String(message).slice(0, 200)}"`);
+    console.log(
+      `[ORCHESTRATOR] Agent start — sessionId: ${sessionId}, pageType: ${pageContext?.pageType || 'unknown'}, preview: "${String(message).slice(0, 200)}"`
+    );
     const systemPrompt = await buildSystemPrompt(userPreferences, userCorrections);
+    agentLog('system_prompt', { preview: String(systemPrompt || '').slice(0, 200) });
 
     const contextBlock = [
       `Current page: ${pageContext?.title ?? ''} (${pageContext?.url ?? ''})`,
@@ -46,14 +69,15 @@ export async function runAgent({
       if (!resp.success) {
         throw new Error(resp.error || 'Claude call failed');
       }
-      totalInput += resp.usage?.input_tokens ?? 0;
-      totalOutput += resp.usage?.output_tokens ?? 0;
+      agentLog('model_call_result', { stopReason: resp.stopReason, content: resp.content });
+      totalInput += resp.usage?.inputTokens ?? 0;
+      totalOutput += resp.usage?.outputTokens ?? 0;
 
       const stop = resp.stopReason;
       if (stop === 'end_turn') {
         finalContent = resp.content;
         finalStop = stop;
-        console.log(`[AGENT LOOP] end_turn reached after ${iterationCount} iterations`);
+        console.log(`[ORCHESTRATOR] End turn — iterations: ${iterationCount}`);
         break;
       }
 
@@ -62,7 +86,10 @@ export async function runAgent({
         if (!toolUse || !toolUse.toolName) {
           throw new Error('Tool use requested but no tool_use block was found');
         }
-        console.log(`[AGENT LOOP] Iteration ${iterationCount + 1} — tool selected: ${toolUse.toolName}`);
+        console.log(
+          `[ORCHESTRATOR] Tool selected — iteration: ${iterationCount + 1}, tool: ${toolUse.toolName}`
+        );
+        agentLog('tool_detected', { name: toolUse.toolName, input: toolUse.toolInput });
         const toolResult = await executeTool(toolUse.toolName, toolUse.toolInput, pageContext);
         toolNameUsed = toolUse.toolName;
         toolsCalledChain.push(toolUse.toolName);
@@ -71,15 +98,30 @@ export async function runAgent({
           toolUse.toolName,
           toolResult
         );
+        agentLog('tool_executed', { preview: String(validatedText || toolResult || '').slice(0, 200) });
         messages.push({ role: 'assistant', content: resp.content });
         if (isValid) {
+          const tuId = toolUseBlockId(resp.content);
+          try {
+            console.log(
+              '[ORCHESTRATOR] Tool result injection —',
+              'tool:',
+              toolUse.toolName,
+              'id:',
+              tuId,
+              'result_length:',
+              String(serialized || validatedText || '').length
+            );
+          } catch {}
           messages.push({
             role: 'user',
-            content: [{ type: 'tool_result', tool_use_id: toolUseBlockId(resp.content), content: serialized }]
+            content: [{ type: 'tool_result', tool_use_id: tuId, content: serialized }]
           });
         } else {
           const correctionMsg = `Tool ${toolUse.toolName} failed: ${reason}. Please try a different approach or answer directly from the page content without using this tool.`;
-          console.log(`[AGENT] Tool result invalid — ${reason} — instructing agent to self-correct`);
+          console.log(
+            `[ORCHESTRATOR] Tool result invalid — reason: ${reason}; instructing self-correction`
+          );
           messages.push({
             role: 'user',
             content: [{ type: 'tool_result', tool_use_id: toolUseBlockId(resp.content), content: correctionMsg }]
@@ -89,6 +131,7 @@ export async function runAgent({
             break;
           }
         }
+        agentLog('tool_result_injected', { messagesLength: messages.length });
 
         iterationCount += 1;
         continue;
@@ -107,10 +150,14 @@ export async function runAgent({
       if (!finalCall.success) {
         throw new Error(finalCall.error || 'Final call failed');
       }
-      totalInput += finalCall.usage?.input_tokens ?? 0;
-      totalOutput += finalCall.usage?.output_tokens ?? 0;
+      totalInput += finalCall.usage?.inputTokens ?? 0;
+      totalOutput += finalCall.usage?.outputTokens ?? 0;
       finalContent = finalCall.content;
       finalStop = finalCall.stopReason ?? 'end_turn';
+      agentLog('final_model_call', {
+        stopReason: finalStop,
+        preview: String(extractTextFromContent(finalContent) || '').slice(0, 200)
+      });
     }
 
     let finalText = extractTextFromContent(finalContent) || '';
@@ -126,7 +173,21 @@ export async function runAgent({
       }
     }
 
-    console.log(`[AGENT COMPLETE] ${toolsCalledChain.length} tools used | ${totalInput} input tokens | ${totalOutput} output tokens`);
+    const toolsLabel =
+      Array.isArray(toolsCalledChain) && toolsCalledChain.length > 0
+        ? toolsCalledChain.join('->')
+        : toolNameUsed || 'direct';
+    console.log(
+      `[ORCHESTRATOR] Agent loop complete — iterations: ${iterationCount}, tools: ${toolsLabel}, inputTokens: ${totalInput}, outputTokens: ${totalOutput}`
+    );
+    if (totalInput === 0 && totalOutput === 0) {
+      console.warn(
+        '[ORCHESTRATOR] Warning: Token counts are both zero. ' +
+          'Check that lib/aiProvider.js usage keys match (expected: inputTokens, outputTokens). ' +
+          'Provider: ' +
+          (process.env.AI_PROVIDER || 'gemini')
+      );
+    }
     return {
       response: finalText,
       toolUsed: toolNameUsed,
