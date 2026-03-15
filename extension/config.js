@@ -1,6 +1,6 @@
 const CONFIG = {
   // Replace with your Railway URL after deployment
-  API_BASE_URL: "https://YOUR-APP-NAME.up.railway.app",
+  API_BASE_URL: "http://localhost:3001",
   MAX_RETRIES: 3,
   REQUEST_TIMEOUT_MS: 30000
   // Development override — comment out for production demo
@@ -21,11 +21,15 @@ const CONFIG = {
 
 async function checkBackendConnectivity() {
   try {
-    const response = await fetch(`${CONFIG.API_BASE_URL}/health`, {
-      signal: AbortSignal.timeout(5000)
-    });
-    if (response.ok) {
+    const timeout = 5000;
+    const h = await fetch(`${CONFIG.API_BASE_URL}/health`, { signal: AbortSignal.timeout(timeout) }).catch(() => null);
+    if (h && h.ok) {
       console.log('[ContextPilot] Backend connected:', CONFIG.API_BASE_URL);
+      return true;
+    }
+    const p = await fetch(`${CONFIG.API_BASE_URL}/api/ping`, { signal: AbortSignal.timeout(timeout) }).catch(() => null);
+    if (p && p.ok) {
+      console.log('[ContextPilot] Backend connected (via /api/ping):', CONFIG.API_BASE_URL);
       return true;
     }
   } catch (err) {

@@ -372,7 +372,13 @@ async function callBackendAPI(endpoint, method, body) {
       return { success: false, code: response.status, error: `Agent error: ${errorDetail}` };
     }
     if (!response.ok) {
-      return { success: false, code: response.status, error: `Request failed (${response.status})` };
+      let msg = `Request failed (${response.status})`;
+      try {
+        const errBody = await response.json();
+        const details = errBody.details || errBody.error;
+        if (details) msg = `Request failed (${response.status}): ${details}`;
+      } catch {}
+      return { success: false, code: response.status, error: msg };
     }
     try {
       const data = await response.json();
@@ -516,6 +522,18 @@ async function sendMessage(userMessage) {
   addUserMessage(text);
   clearInput();
   try {
+    if (!state.pageContext) {
+      const refreshed = await getPagePayload();
+      if (refreshed) {
+        state.pageContext = refreshed;
+        state.currentPageType = refreshed.pageType || 'generic';
+        setPageBadge(state.currentPageType);
+        renderPresetCommands(state.currentPageType);
+      } else {
+        addErrorMessage('No page content available yet. Click Retry Connection or refresh the tab, then try again.');
+        return;
+      }
+    }
     const body = {
       message: text,
       pageContext: state.pageContext,

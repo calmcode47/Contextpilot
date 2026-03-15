@@ -49,6 +49,18 @@ app.use('/api/feedback', feedbackLimiter, feedbackRoutes);
 app.use('/api/history', historyRoutes);
 app.use('/api/ping', pingRoutes);
 
+// Handle CORS preflight for all routes
+// Note: CORS preflights are handled by the global cors middleware above.
+
+// Friendly root endpoint for quick connectivity checks
+app.get('/', (req, res) => {
+  res.json({
+    service: 'ContextPilot API',
+    status: 'ok',
+    endpoints: ['/health', '/api/ping', 'POST /api/chat', 'GET /api/history', 'POST /api/feedback']
+  });
+});
+
 app.get('/health', cors(), (req, res) => {
   res.json({
     status: 'ok',

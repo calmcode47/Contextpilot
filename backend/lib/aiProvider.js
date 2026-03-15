@@ -95,11 +95,8 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
         modelConfig.tools = functionDecls;
         modelConfig.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
       }
-      const model = genAI.getGenerativeModel(modelConfig);
       const { history, toolIdToName } = convertMessagesToGeminiHistory(messages || []);
-      console.log(
-        `[GEMINI] Sending message — tools: ${Array.isArray(tools) ? tools.length : 0}, history: ${history.length}`
-      );
+      console.log(`[GEMINI] Sending message — tools: ${Array.isArray(tools) ? tools.length : 0}, history: ${history.length}`);
       const last = Array.isArray(messages) && messages.length > 0 ? messages[messages.length - 1] : { role: 'user', content: '' };
       let lastParts = [];
       if (typeof last?.content === 'string') {
@@ -117,18 +114,50 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
       } else {
         lastParts = [{ text: '' }];
       }
-      const chat = model.startChat({ history });
-      const result = await chat.sendMessage({ role: 'user', parts: lastParts });
+
+      async function sendWithModel(modelName) {
+        const cfg = { ...modelConfig, model: modelName };
+        const model = genAI.getGenerativeModel(cfg);
+        const chat = model.startChat({ history });
+        return chat.sendMessage(lastParts);
+      }
+
+      let result;
+      let attempts = 0;
+      const maxAttempts = 2;
+      const modelsToTry = [modelConfig.model];
+      if (!modelsToTry.includes('gemini-2.0-flash')) modelsToTry.push('gemini-2.0-flash');
+
+      for (const modelName of modelsToTry) {
+        attempts += 1;
+        try {
+          result = await sendWithModel(modelName);
+          break;
+        } catch (err) {
+          const status = err?.status || err?.code || 0;
+          const msg = String(err?.message || '');
+          if (String(status) === '429' || /Too Many Requests|quota/i.test(msg)) {
+            console.warn(`[GEMINI] Rate limit — model: ${modelName}. Attempt ${attempts}/${maxAttempts}`);
+            const retryMs = 6000;
+            await new Promise((r) => setTimeout(r, retryMs));
+            if (attempts < maxAttempts) {
+              continue;
+            }
+          }
+          throw err;
+        }
+      }
+
       const candidate = result?.response?.candidates?.[0];
       const parts = candidate?.content?.parts || [];
       const usage = {
         inputTokens: result?.response?.usageMetadata?.promptTokenCount || 0,
         outputTokens: result?.response?.usageMetadata?.candidatesTokenCount || 0
       };
+        outputTokens: result?.response?.usageMetadata?.candidatesTokenCount || 0
+      };
       const firstPart = parts[0];
       if (!firstPart) {
-        throw new Error('No parts in Gemini response');
-      }
       if (firstPart.functionCall) {
         console.log(
           `[GEMINI] Response received — type: function_call, tool: ${firstPart.functionCall.name}`

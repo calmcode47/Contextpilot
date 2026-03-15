@@ -1,4 +1,4 @@
-import { rateLimit } from 'express-rate-limit';
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 
 const staticAllowed = new Set(['http://localhost:3000', 'http://localhost:5173']);
 
@@ -29,7 +29,7 @@ function makeLimiter(windowMs, limit, { skip, keyGenerator } = {}) {
   return rateLimit({
     windowMs,
     limit,
-    standardHeaders: 'draft-8',
+    standardHeaders: true,
     legacyHeaders: false,
     handler: (req, res) => {
       const retrySeconds = Math.ceil(windowMs / 1000);
@@ -40,9 +40,7 @@ function makeLimiter(windowMs, limit, { skip, keyGenerator } = {}) {
     keyGenerator:
       typeof keyGenerator === 'function'
         ? keyGenerator
-        : (req) => {
-            return req.ip;
-          }
+        : (req) => ipKeyGenerator(req)
   });
 }
 
@@ -56,7 +54,7 @@ export const chatLimiter = makeLimiter(60 * 1000, 30, {
       const id = req.body && req.body.userId;
       if (id && typeof id === 'string' && id.trim().length > 0) return `user:${id}`;
     } catch {}
-    return req.ip;
+    return ipKeyGenerator(req);
   }
 });
 export const feedbackLimiter = makeLimiter(15 * 60 * 1000, 30, {
@@ -66,6 +64,6 @@ export const feedbackLimiter = makeLimiter(15 * 60 * 1000, 30, {
       const id = req.body && req.body.userId;
       if (id && typeof id === 'string' && id.trim().length > 0) return `user:${id}`;
     } catch {}
-    return req.ip;
+    return ipKeyGenerator(req);
   }
 });
