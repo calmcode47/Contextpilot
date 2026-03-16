@@ -44,6 +44,69 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarel
 .cp-thumb.selected-up { border-color: #16a34a; color: #16a34a; transform: scale(1.02); }
 .cp-thumb.selected-down { border-color: #dc2626; color: #dc2626; transform: scale(1.02); }
 .message-metadata { font-size: 11px; color: #888; margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* Profile Panel */
+.profile-panel { position: absolute; inset: 0; background: #ffffff; z-index: 100; display: flex; flex-direction: column; transform: translateX(100%); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
+.profile-panel.visible { transform: translateX(0); }
+.profile-header { display: flex; align-items: center; padding: 14px 16px; border-bottom: 1px solid #eef0f3; background: #1a1a2e; color: #fff; gap: 12px; }
+.profile-back { background: none; border: none; color: #a0aec0; cursor: pointer; font-size: 13px; padding: 0; }
+.profile-back:hover { color: #fff; }
+.profile-title { flex: 1; margin: 0; font-size: 15px; font-weight: 600; color: #fff; }
+.profile-delete-all { background: none; border: none; cursor: pointer; font-size: 16px; opacity: 0.6; }
+.profile-delete-all:hover { opacity: 1; }
+.profile-content { flex: 1; overflow-y: auto; padding: 16px; }
+.profile-category { margin-bottom: 20px; }
+.profile-category-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.profile-category-icon { font-size: 16px; }
+.profile-category-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #718096; }
+.profile-field { display: flex; justify-content: space-between; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid #f7f8fa; gap: 12px; }
+.profile-field-key { font-size: 12px; color: #718096; min-width: 100px; flex-shrink: 0; }
+.profile-field-value { font-size: 13px; color: #2d3748; font-weight: 500; text-align: right; word-break: break-word; }
+.profile-actions { padding: 16px; border-top: 1px solid #eef0f3; display: flex; flex-direction: column; gap: 8px; }
+.profile-last-updated { font-size: 11px; color: #a0aec0; text-align: center; }
+.profile-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px; text-align: center; gap: 12px; }
+.profile-empty-icon { font-size: 48px; }
+.profile-empty-text { font-weight: 600; font-size: 15px; color: #4a5568; }
+.profile-empty-hint { font-size: 13px; color: #718096; line-height: 1.5; }
+.profile-empty-hint strong { color: #4361ee; }
+.header-btn { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; margin-left: 6px; cursor: pointer; }
+.header-btn:hover { border-color: var(--accent); color: var(--accent); }
+.message-metadata { font-size: 11px; color: #888; margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* Fill Review Card */
+.fill-review-card { background: #f8faff; border: 1.5px solid #4361ee40; border-radius: 12px; padding: 0; margin: 12px 0; overflow: hidden; }
+.fill-review-header { background: #4361ee; color: #fff; padding: 12px 16px; display: flex; align-items: center; gap: 8px; }
+.fill-review-title { font-weight: 600; font-size: 14px; flex: 1; }
+.fill-stats { font-size: 11px; opacity: 0.85; }
+.fill-fields-list { padding: 8px 16px; max-height: 220px; overflow-y: auto; }
+.fill-field-item { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid #eef0f3; gap: 12px; }
+.fill-field-info { display: flex; align-items: center; gap: 6px; }
+.fill-field-label { font-size: 12px; color: #4a5568; }
+.fill-field-value { font-size: 12px; color: #2d3748; font-weight: 500; text-align: right; }
+.fill-field-low-conf { background: #fffbeb; margin: 0 -16px; padding: 7px 16px; }
+.fill-confidence-badge { background: #f6ad55; color: #fff; font-size: 9px; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.fill-field-skipped .fill-field-label { color: #a0aec0; text-decoration: line-through; }
+.fill-skip-reason { font-size: 11px; color: #a0aec0; }
+.fill-review-actions { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #eef0f3; }
+.btn-fill-confirm { flex: 1; background: #4361ee; color: #fff; border: none; padding: 10px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; }
+.btn-fill-confirm:hover { background: #3451d4; }
+.btn-fill-confirm:disabled { opacity: 0.6; cursor: not-allowed; }
+.btn-fill-cancel { background: none; border: 1px solid #e2e8f0; color: #718096; padding: 10px 16px; border-radius: 8px; font-size: 13px; cursor: pointer; }
+.fill-disclaimer { font-size: 11px; color: #a0aec0; padding: 8px 16px; border-top: 1px solid #f0f0f0; background: #fafafa; }
+.fill-result-header { padding: 12px 16px; display: flex; align-items: center; gap: 8px; background: #f0fff4; border-bottom: 1px solid #c6f6d5; }
+.fill-result-title { font-weight: 600; font-size: 14px; color: #276749; }
+.fill-result-list { padding: 8px 16px; max-height: 200px; overflow-y: auto; }
+.fill-result-item { display: flex; gap: 8px; padding: 5px 0; font-size: 12px; align-items: center; }
+.fill-result-ok { color: #276749; }
+.fill-result-fail { color: #c53030; }
+.fill-result-skip { color: #a0aec0; }
+.fill-result-err { color: #c53030; font-style: italic; }
+.fill-result-val { color: #4a5568; margin-left: auto; }
+.fill-result-footer { padding: 10px 16px; font-size: 11px; color: #718096; background: #fafafa; }
+.fill-feedback { display: flex; align-items: center; gap: 8px; padding: 10px 16px; }
+.fill-feedback-label { font-size: 12px; color: #718096; flex: 1; }
+.fill-fb-yes, .fill-fb-no { background: none; border: 1px solid #e2e8f0; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+.fill-fb-yes:hover { background: #f0fff4; border-color: #68d391; }
+.fill-fb-no:hover  { background: #fff5f5; border-color: #fc8181; }
+.message-metadata { font-size: 11px; color: #888; margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tool-pill { background: #f0f4ff; color: #4361ee; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 500; }
 .tool-arrow { color: #bbb; font-size: 10px; }
 

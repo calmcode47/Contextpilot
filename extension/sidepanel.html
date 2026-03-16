@@ -16,6 +16,7 @@
         </div>
         <div class="cp-header-right">
           <span id="pageBadge" class="cp-badge">🌐 Web</span>
+          <button id="profile-icon-btn" class="header-btn" title="My Profile">👤</button>
           <button class="cp-gear" title="Settings" aria-label="Settings">⚙️</button>
         </div>
       </div>
@@ -33,6 +34,27 @@
         <!-- Typing indicator -->
         <div id="typing" class="cp-typing hidden">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        </div>
+      </div>
+
+      <div id="profile-panel" class="profile-panel hidden">
+        <div class="profile-header">
+          <button id="profile-back-btn" class="profile-back">← Back to Chat</button>
+          <h2 class="profile-title">My Profile</h2>
+          <button id="profile-delete-all-btn" class="profile-delete-all" title="Delete all profile data">🗑</button>
+        </div>
+        <div id="profile-empty-state" class="profile-empty hidden">
+          <div class="profile-empty-icon">👤</div>
+          <div class="profile-empty-text">No profile saved yet</div>
+          <div class="profile-empty-hint">
+            Say <strong>"Save my details: Name: [your name], Email: [your email]..."</strong>
+            in the chat and I'll remember them for form filling.
+          </div>
+        </div>
+        <div id="profile-content" class="profile-content"></div>
+        <div class="profile-actions">
+          <button id="profile-update-btn" class="btn-primary">✏️ Update Details</button>
+          <div class="profile-last-updated" id="profile-last-updated"></div>
         </div>
       </div>
 

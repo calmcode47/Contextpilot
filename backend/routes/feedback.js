@@ -4,12 +4,22 @@ import { asyncHandler } from '../middleware/errorHandler.js';
 
 const router = Router();
 
+function normalizeRating(rawRating) {
+  if (rawRating === 'positive' || rawRating === 1 || rawRating === '1') return 'positive';
+  if (rawRating === 'negative' || rawRating === -1 || rawRating === '-1') return 'negative';
+  return null;
+}
+
 router.post(
   '/',
   asyncHandler(async (req, res) => {
     const { messageId, userId, rating, correction } = req.body || {};
-    if (!messageId || !userId || (rating !== 'positive' && rating !== 'negative')) {
-      return res.status(400).json({ error: 'Bad Request', message: 'messageId, userId and rating="positive|negative" are required' });
+    const normalizedRating = normalizeRating(rating);
+    if (!messageId || !userId || !normalizedRating) {
+      return res.status(400).json({
+        error: 'Invalid rating value',
+        details: 'rating must be "positive", "negative", 1, or -1'
+      });
     }
 
     const dup = await supabase
@@ -22,13 +32,12 @@ router.post(
       return res.status(409).json({ error: 'Feedback already submitted for this message' });
     }
 
-    const mappedRating = rating === 'positive' ? 1 : -1;
-    const { data, error } = await saveUserFeedback(messageId, userId, mappedRating, correction ?? null);
+    const { data, error } = await saveUserFeedback(messageId, userId, normalizedRating, correction ?? null);
     if (error) {
       return res.status(500).json({ error: 'Error', message: 'Failed to save feedback' });
     }
 
-    const learned = rating === 'negative' && typeof correction === 'string' && correction.trim().length > 0;
+    const learned = normalizedRating === 'negative' && typeof correction === 'string' && correction.trim().length > 0;
     if (learned) {
       const length = correction.trim().length;
       console.log(`[FEEDBACK ROUTE] Correction learned — userId: ${userId}, length: ${length}`);

@@ -25,6 +25,118 @@ if (config.AI_PROVIDER === 'anthropic') {
 
 export default anthropicClient;
 
+export async function checkGeminiKeyConnectivity() {
+  try {
+    if (config.AI_PROVIDER !== 'gemini') return;
+    const key = config.GEMINI_API_KEY;
+    if (!key || key.length < 20) {
+      console.warn('[GEMINI] No API key present for connectivity check');
+      return;
+    }
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
+      key
+    )}`;
+    const res = await fetch(url, { method: 'GET' });
+    if (res.ok) {
+      console.log('[GEMINI] Connectivity check: key accepted (models list fetched)');
+    } else {
+      const text = await res.text();
+      console.warn(
+        '[GEMINI] Connectivity check: key rejected',
+        'status:',
+        res.status,
+        'body:',
+        text.slice(0, 240)
+      );
+    }
+  } catch (e) {
+    console.warn('[GEMINI] Connectivity check failed:', e?.message || String(e));
+  }
+}
+
+function classifyProviderError(error) {
+  const message = error?.message || String(error || '');
+  let details = '';
+  try {
+    if (error?.details) details = String(error.details);
+  } catch {}
+  const status = error?.status || error?.statusCode || 0;
+  if (status === 403 || /403|PERMISSION_DENIED|permission denied|not authorized|API has not been used|access not configured/i.test(message)) {
+    return {
+      type: 'PERMISSION_DENIED',
+      httpStatus: 503,
+      userMessage:
+        'AI provider request was blocked (permission denied). Check API enablement and key restrictions.',
+      devMessage:
+        'Gemini permission denied (often NOT an invalid key). Check:\n' +
+        '  1) In Google Cloud Console, ensure the Generative Language API is enabled for the project tied to this key\n' +
+        '  2) API key restrictions: remove/refine HTTP referrer / IP restrictions for server-side use\n' +
+        '  3) If using a “browser key”, create an unrestricted server key for backend\n' +
+        `  Current AI_PROVIDER: ${config.AI_PROVIDER}` +
+        (details ? `\n\nDetails:\n${details}` : ''),
+      retryAfter: 0
+    };
+  }
+  if (status === 451 || /SAFETY|blocked|blockReason/i.test(message)) {
+    return {
+      type: 'SAFETY_BLOCKED',
+      httpStatus: 503,
+      userMessage:
+        'AI provider blocked the response (safety policy). Try rephrasing your request or reducing sensitive content.',
+      devMessage:
+        `Gemini safety block detected. Raw message: ${message}`.slice(0, 1200) +
+        (details ? `\n\nDetails:\n${details}` : ''),
+      retryAfter: 0
+    };
+  }
+  if (status === 429 || /429|quota/i.test(message)) {
+    return {
+      type: 'QUOTA_EXCEEDED',
+      httpStatus: 503,
+      userMessage: 'AI provider quota exhausted. Please wait and retry, or switch providers.',
+      devMessage:
+        'Gemini free-tier quota exceeded. Options:\n' +
+        '  1. Wait for quota reset (daily)\n' +
+        '  2. Set GEMINI_API_KEY to a paid-tier key\n' +
+        '  3. Switch AI_PROVIDER=anthropic with a valid ANTHROPIC_API_KEY',
+      retryAfter: 60
+    };
+  }
+  if (
+    status === 401 ||
+    /401|invalid.*key|API key not valid|x-api-key/i.test(message)
+  ) {
+    return {
+      type: 'INVALID_API_KEY',
+      httpStatus: 503,
+      userMessage: 'AI provider authentication failed. Check your API key configuration.',
+      devMessage:
+        'Invalid API key detected. Check:\n' +
+        '  1. ANTHROPIC_API_KEY or GEMINI_API_KEY in your .env\n' +
+        '  2. Key is not expired or revoked\n' +
+        '  3. Ensure the key is pasted WITHOUT quotes\n' +
+        `  4. AI_PROVIDER matches the key you provided\n  Current AI_PROVIDER: ${config.AI_PROVIDER}`,
+      retryAfter: 0
+    };
+  }
+  if (status === 404 || /model.*not found/i.test(message)) {
+    return {
+      type: 'MODEL_NOT_FOUND',
+      httpStatus: 503,
+      userMessage: 'AI model not available. Check GEMINI_MODEL or ANTHROPIC_MODEL config.',
+      devMessage: 'Model not found. Set GEMINI_MODEL=gemini-2.0-flash in your .env',
+      retryAfter: 0
+    };
+  }
+  return {
+    type: 'PROVIDER_ERROR',
+    httpStatus: 503,
+    userMessage: 'AI provider is temporarily unavailable. Please try again.',
+    devMessage: details ? `${message}\n\nDetails:\n${details}` : message,
+    retryAfter: 30
+  };
+}
+
 /** Unified model call with standardized content and usage fields. */
 export async function callClaude({ systemPrompt, messages, tools, maxTokens } = {}) {
   try {
@@ -123,41 +235,90 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
       }
 
       let result;
-      let attempts = 0;
-      const maxAttempts = 2;
       const modelsToTry = [modelConfig.model];
       if (!modelsToTry.includes('gemini-2.0-flash')) modelsToTry.push('gemini-2.0-flash');
 
+      let lastErr = null;
       for (const modelName of modelsToTry) {
-        attempts += 1;
-        try {
-          result = await sendWithModel(modelName);
-          break;
-        } catch (err) {
-          const status = err?.status || err?.code || 0;
-          const msg = String(err?.message || '');
-          if (String(status) === '429' || /Too Many Requests|quota/i.test(msg)) {
-            console.warn(`[GEMINI] Rate limit — model: ${modelName}. Attempt ${attempts}/${maxAttempts}`);
-            const retryMs = 6000;
-            await new Promise((r) => setTimeout(r, retryMs));
-            if (attempts < maxAttempts) {
+        const maxAttemptsPerModel = 2;
+        for (let attempt = 1; attempt <= maxAttemptsPerModel; attempt++) {
+          try {
+            result = await sendWithModel(modelName);
+            lastErr = null;
+            break;
+          } catch (err) {
+            lastErr = err;
+            const status = err?.status || err?.code || 0;
+            const msg = String(err?.message || '');
+            if (String(status) === '429' || /Too Many Requests|quota/i.test(msg)) {
+              console.warn(
+                `[GEMINI] Rate limit — model: ${modelName}. Attempt ${attempt}/${maxAttemptsPerModel}`
+              );
+              const retryMs = 6000;
+              await new Promise((r) => setTimeout(r, retryMs));
               continue;
             }
+            throw err;
           }
-          throw err;
         }
+        if (result) break;
       }
+      if (!result) throw lastErr || new Error('Gemini call failed with no result');
 
-      const candidate = result?.response?.candidates?.[0];
+      const responseObj = result?.response;
+      const candidate = responseObj?.candidates?.[0];
       const parts = candidate?.content?.parts || [];
       const usage = {
-        inputTokens: result?.response?.usageMetadata?.promptTokenCount || 0,
-        outputTokens: result?.response?.usageMetadata?.candidatesTokenCount || 0
+        inputTokens: responseObj?.usageMetadata?.promptTokenCount || 0,
+        outputTokens: responseObj?.usageMetadata?.candidatesTokenCount || 0
       };
-        outputTokens: result?.response?.usageMetadata?.candidatesTokenCount || 0
-      };
+
+      // Newer SDKs expose helpers; use them first when present.
+      try {
+        const maybeText = typeof responseObj?.text === 'function' ? responseObj.text() : '';
+        if (typeof maybeText === 'string' && maybeText.trim().length > 0) {
+          console.log(`[GEMINI] Response received — type: text(helper), stopReason: end_turn`);
+          return {
+            success: true,
+            content: [{ type: 'text', text: maybeText }],
+            stopReason: 'end_turn',
+            usage
+          };
+        }
+      } catch {}
+
+      // Handle blocked / empty-candidate responses with a clear error.
+      const blockReason =
+        responseObj?.promptFeedback?.blockReason ||
+        responseObj?.promptFeedback?.blockReasonMessage ||
+        candidate?.finishReason;
+      if (!candidate || !Array.isArray(parts) || parts.length === 0) {
+        let devDetails = '';
+        try {
+          devDetails = JSON.stringify(
+            {
+              model: candidate?.model,
+              finishReason: candidate?.finishReason,
+              promptFeedback: responseObj?.promptFeedback,
+              candidatesCount: Array.isArray(responseObj?.candidates) ? responseObj.candidates.length : 0
+            },
+            null,
+            2
+          );
+        } catch {}
+        if (blockReason) {
+          throw Object.assign(new Error(`Gemini blocked the response: ${String(blockReason)}`), {
+            status: 403,
+            details: devDetails
+          });
+        }
+        throw Object.assign(new Error('No parts in Gemini response'), {
+          status: 503,
+          details: devDetails
+        });
+      }
+
       const firstPart = parts[0];
-      if (!firstPart) {
       if (firstPart.functionCall) {
         console.log(
           `[GEMINI] Response received — type: function_call, tool: ${firstPart.functionCall.name}`
@@ -176,11 +337,13 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
           usage
         };
       }
-      if (firstPart.text) {
-        console.log(`[GEMINI] Response received — type: text, stopReason: end_turn`);
+
+      const textPart = parts.find((p) => typeof p?.text === 'string' && p.text.trim().length > 0);
+      if (textPart?.text) {
+        console.log(`[GEMINI] Response received — type: text(parts), stopReason: end_turn`);
         return {
           success: true,
-          content: [{ type: 'text', text: firstPart.text }],
+          content: [{ type: 'text', text: textPart.text }],
           stopReason: 'end_turn',
           usage
         };
@@ -206,10 +369,17 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
       stopReason: response.stop_reason
     };
   } catch (error) {
+    const classified = classifyProviderError(error);
+    console.error('[AI PROVIDER] Error classified as:', classified.type);
+    console.error('[AI PROVIDER] Dev message:', classified.devMessage);
     return {
       success: false,
-      error: error?.message || 'Model call failed',
-      code: error?.status || 500
+      error: classified.userMessage,
+      devError: classified.devMessage,
+      errorType: classified.type,
+      httpStatus: classified.httpStatus,
+      retryAfter: classified.retryAfter,
+      code: classified.httpStatus
     };
   }
 }

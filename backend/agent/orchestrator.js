@@ -67,7 +67,12 @@ export async function runAgent({
         maxTokens: 1500
       });
       if (!resp.success) {
-        throw new Error(resp.error || 'Claude call failed');
+        const err = new Error(resp.error || 'AI provider call failed');
+        err.providerErrorType = resp.errorType;
+        err.httpStatus = resp.httpStatus || 503;
+        err.retryAfter = resp.retryAfter;
+        err.devMessage = resp.devError;
+        throw err;
       }
       agentLog('model_call_result', { stopReason: resp.stopReason, content: resp.content });
       totalInput += resp.usage?.inputTokens ?? 0;
@@ -90,9 +95,53 @@ export async function runAgent({
           `[ORCHESTRATOR] Tool selected — iteration: ${iterationCount + 1}, tool: ${toolUse.toolName}`
         );
         agentLog('tool_detected', { name: toolUse.toolName, input: toolUse.toolInput });
-        const toolResult = await executeTool(toolUse.toolName, toolUse.toolInput, pageContext);
+        const toolResult = await executeTool(
+          toolUse.toolName,
+          toolUse.toolInput,
+          { ...(pageContext || {}), userId }
+        );
         toolNameUsed = toolUse.toolName;
         toolsCalledChain.push(toolUse.toolName);
+
+        try {
+          if (toolUse.toolName === 'fill_form' && typeof toolResult === 'string') {
+            if (toolResult.includes('"action":"fill_form_ready"')) {
+              const fillPayload = JSON.parse(toolResult);
+              return {
+                response: fillPayload.message,
+                toolUsed: 'fill_form',
+                toolsCalledChain: ['fill_form'],
+                iterations: iterationCount + 1,
+                inputTokens: totalInput,
+                outputTokens: totalOutput,
+                fillPayload: {
+                  action: 'fill_form_ready',
+                  fillInstructions: fillPayload.fillInstructions,
+                  skippedFields: fillPayload.skippedFields,
+                  stats: fillPayload.stats,
+                  requiresReview: fillPayload.requiresReview,
+                  skipConfirmation: !!fillPayload.skipConfirmation
+                }
+              };
+            }
+            if (toolResult.includes('"action":"fill_form_error"')) {
+              const errorPayload = JSON.parse(toolResult);
+              return {
+                response: errorPayload.message,
+                toolUsed: 'fill_form',
+                toolsCalledChain: ['fill_form'],
+                iterations: iterationCount + 1,
+                inputTokens: totalInput,
+                outputTokens: totalOutput,
+                fillPayload: null,
+                error: {
+                  type: errorPayload.errorType,
+                  message: errorPayload.message
+                }
+              };
+            }
+          }
+        } catch {}
 
         const { isValid, reason, validatedText, serialized } = coerceAndValidateToolResult(
           toolUse.toolName,
@@ -117,6 +166,20 @@ export async function runAgent({
             role: 'user',
             content: [{ type: 'tool_result', tool_use_id: tuId, content: serialized }]
           });
+          try {
+            if (typeof toolResult === 'string' && toolResult.includes('"action":"profile_saved"')) {
+              const toolData = JSON.parse(toolResult);
+              const summaryText =
+                typeof toolData?.summary === 'string' && toolData.summary.trim().length > 0
+                  ? toolData.summary
+                  : '';
+              const confirmMsg =
+                summaryText.length > 0
+                  ? `The user's profile was successfully saved. The following details were extracted and stored: ${summaryText}. Produce a friendly confirmation message that: 1) lists what was saved (use the summary field), 2) tells the user they can now say 'fill this form' on any form page, 3) is warm and encouraging, under 100 words.`
+                  : `The user's profile was successfully saved. Produce a friendly confirmation message that: 1) lists what was saved, 2) tells the user they can now say 'fill this form' on any form page, 3) is warm and encouraging, under 100 words.`;
+              messages.push({ role: 'user', content: confirmMsg });
+            }
+          } catch {}
         } else {
           const correctionMsg = `Tool ${toolUse.toolName} failed: ${reason}. Please try a different approach or answer directly from the page content without using this tool.`;
           console.log(
@@ -148,7 +211,12 @@ export async function runAgent({
         maxTokens: 1500
       });
       if (!finalCall.success) {
-        throw new Error(finalCall.error || 'Final call failed');
+        const err = new Error(finalCall.error || 'AI provider call failed');
+        err.providerErrorType = finalCall.errorType;
+        err.httpStatus = finalCall.httpStatus || 503;
+        err.retryAfter = finalCall.retryAfter;
+        err.devMessage = finalCall.devError;
+        throw err;
       }
       totalInput += finalCall.usage?.inputTokens ?? 0;
       totalOutput += finalCall.usage?.outputTokens ?? 0;
@@ -197,7 +265,11 @@ export async function runAgent({
       outputTokens: totalOutput
     };
   } catch (err) {
-    throw new Error(`Agent run failed: ${err?.message || String(err)}`);
+    if (err && err.providerErrorType) {
+      throw err;
+    }
+    const e = new Error(`Agent run failed: ${err?.message || String(err)}`);
+    throw e;
   }
 }
 

@@ -43,6 +43,21 @@ export function validateToolContext(toolName, pageContext) {
   return { valid: true };
 }
 
+function flattenForScope(scopedDetails) {
+  const flat = {};
+  for (const [category, fields] of Object.entries(scopedDetails || {})) {
+    if (fields && typeof fields === 'object' && !Array.isArray(fields)) {
+      for (const [key, value] of Object.entries(fields)) {
+        if (value !== null && value !== undefined) {
+          flat[key] = value;
+          flat[`${category}_${key}`] = value;
+        }
+      }
+    }
+  }
+  return flat;
+}
+
 export async function executeTool(toolName, toolInput, pageContext) {
   try {
     const ctx = validateToolContext(toolName, pageContext);
@@ -178,6 +193,261 @@ export async function executeTool(toolName, toolInput, pageContext) {
         } catch (e) {
           return JSON.stringify({ ok: false, tool: toolName, error: e?.message || String(e) });
         }
+      }
+      case 'save_profile': {
+        try {
+          const rawInput =
+            typeof toolInput?.rawInput === 'string' ? toolInput.rawInput : String(toolInput || '');
+          const updateMode =
+            typeof toolInput?.updateMode === 'string' ? toolInput.updateMode : 'partial_update';
+          console.log(`[TOOL] Executing save_profile — mode: ${updateMode}`);
+          const systemPrompt =
+            'You are a precise personal information extractor. Extract personal details from the user\'s message and return ONLY a valid JSON object. No preamble, no explanation, no markdown — only the JSON object.\n\nOutput schema:\n{\n  "personal": {\n    "fullName": "string or null",\n    "firstName": "string or null",\n    "lastName": "string or null",\n    "email": "string or null",\n    "phone": "string or null",\n    "dateOfBirth": "YYYY-MM-DD or null",\n    "gender": "string or null",\n    "nationality": "string or null"\n  },\n  "academic": {\n    "college": "string or null",\n    "university": "string or null",\n    "degree": "string or null",\n    "branch": "string or null",\n    "year": "string or null",\n    "rollNumber": "string or null",\n    "cgpa": "string or null",\n    "passingYear": "string or null"\n  },\n  "professional": {\n    "company": "string or null",\n    "jobTitle": "string or null",\n    "experience": "string or null",\n    "skills": ["array of strings or empty array"],\n    "linkedIn": "string or null",\n    "github": "string or null",\n    "portfolio": "string or null"\n  },\n  "address": {\n    "street": "string or null",\n    "city": "string or null",\n    "state": "string or null",\n    "country": "string or null",\n    "pincode": "string or null",\n    "zip": "string or null"\n  },\n  "custom": {}\n}\n\nRules:\n- Only include fields that are explicitly mentioned in the input\n- Set unmentioned fields to null\n- Normalize phone numbers: remove spaces and dashes\n- Normalize email: lowercase\n- For names: if only full name given, also split into firstName/lastName\n- For Indian users: "pincode" not "zip"\n- Return ONLY the JSON. No other text.';
+          const userMessage = `Extract personal details from this message:\n\n"${rawInput}"`;
+          const resp = await callClaude({
+            systemPrompt,
+            messages: [{ role: 'user', content: userMessage }],
+            tools: null,
+            maxTokens: 800
+          });
+          if (!resp?.success) {
+            const err = resp?.error || 'Model call failed';
+            console.warn('[TOOL ERROR] save_profile', err);
+            return `Failed to parse profile details: ${err}`;
+          }
+          let parsedDetails;
+          try {
+            const rawText = extractTextFromContent(resp.content) || '';
+            const cleanJson = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            parsedDetails = JSON.parse(cleanJson || '{}');
+          } catch (parseError) {
+            console.error('[TOOL save_profile] JSON parse failed:', parseError.message);
+            return 'Could not parse the details you provided. Please try again with clearer information like: "My name is [name], email is [email], studying at [college]"';
+          }
+          function removeNulls(obj) {
+            const cleaned = {};
+            for (const [key, value] of Object.entries(obj || {})) {
+              if (value === null || value === undefined) continue;
+              if (typeof value === 'object' && !Array.isArray(value)) {
+                const cleanedNested = removeNulls(value);
+                if (Object.keys(cleanedNested).length > 0) {
+                  cleaned[key] = cleanedNested;
+                }
+              } else if (Array.isArray(value) && value.length === 0) {
+                continue;
+              } else {
+                cleaned[key] = value;
+              }
+            }
+            return cleaned;
+          }
+          const cleanedDetails = removeNulls(parsedDetails);
+          function countFields(obj, depth = 0) {
+            let count = 0;
+            for (const value of Object.values(obj || {})) {
+              if (typeof value === 'object' && !Array.isArray(value) && depth < 2) {
+                count += countFields(value, depth + 1);
+              } else {
+                count += 1;
+              }
+            }
+            return count;
+          }
+          const fieldCount = countFields(cleanedDetails);
+          if (fieldCount === 0) {
+            return 'I could not identify any personal details in your message. Try being more specific: "Save my details: Name: [your name], Email: [your email], College: [your college]"';
+          }
+          const { upsertUserProfile } = await import('../lib/supabase.js');
+          const uid = pageContext?.userId || 'anonymous';
+          const { data: savedProfile, error: saveError } = await upsertUserProfile(uid, cleanedDetails);
+          if (saveError) {
+            console.error('[TOOL save_profile] Supabase error:', saveError);
+            return `Details parsed successfully but failed to save: ${saveError.message}. Please try again.`;
+          }
+          const summary = [];
+          if (cleanedDetails.personal) {
+            const p = cleanedDetails.personal;
+            if (p.fullName) summary.push(`Name: ${p.fullName}`);
+            if (p.email) summary.push(`Email: ${p.email}`);
+            if (p.phone) summary.push(`Phone: ${p.phone}`);
+          }
+          if (cleanedDetails.academic) {
+            const a = cleanedDetails.academic;
+            if (a.college || a.university) summary.push(`College: ${a.college || a.university}`);
+            if (a.year) summary.push(`Year: ${a.year}`);
+            if (a.degree) summary.push(`Degree: ${a.degree}`);
+          }
+          if (cleanedDetails.professional) {
+            const pr = cleanedDetails.professional;
+            if (pr.company) summary.push(`Company: ${pr.company}`);
+            if (pr.jobTitle) summary.push(`Role: ${pr.jobTitle}`);
+          }
+          if (cleanedDetails.address) {
+            const addr = cleanedDetails.address;
+            if (addr.city) summary.push(`City: ${addr.city}`);
+          }
+          return JSON.stringify({
+            success: true,
+            action: 'profile_saved',
+            fieldsExtracted: fieldCount,
+            updateMode,
+            summary: summary.join(' · '),
+            message: `Successfully saved ${fieldCount} detail${fieldCount !== 1 ? 's' : ''} to your profile.`
+          });
+        } catch (e) {
+          return JSON.stringify({ ok: false, tool: toolName, error: e?.message || String(e) });
+        }
+      }
+      case 'fill_form': {
+        const { formContext = '', fillScope = 'all_fields', skipConfirmation = false } = toolInput || {};
+        const userId = pageContext?.userId || 'anonymous';
+        console.log('[TOOL fill_form] Starting form fill —', 'userId:', userId, 'scope:', fillScope, 'context:', formContext || 'none');
+        const { getUserProfileFlat } = await import('../lib/supabase.js');
+        const { data: flatProfile, error: profileError } = await getUserProfileFlat(userId);
+        if (profileError || !flatProfile) {
+          return JSON.stringify({
+            success: false,
+            action: 'fill_form_error',
+            errorType: 'no_profile',
+            message:
+              "You haven't saved any personal details yet. Say 'Save my details' followed by your information, and I'll remember it for future form fills."
+          });
+        }
+        const { getUserProfile } = await import('../lib/supabase.js');
+        const { data: fullProfile } = await getUserProfile(userId);
+        let scopedProfile = flatProfile;
+        if (fillScope !== 'all_fields' && fullProfile?.details) {
+          const categoryMap = {
+            personal_only: ['personal'],
+            academic_only: ['academic'],
+            professional_only: ['professional']
+          };
+          const allowedCategories = categoryMap[fillScope] || [];
+          const scopedDetails = {};
+          for (const cat of allowedCategories) {
+            if (fullProfile.details[cat]) scopedDetails[cat] = fullProfile.details[cat];
+          }
+          scopedProfile = flattenForScope(scopedDetails);
+        }
+        const profileFieldCount = Object.keys(scopedProfile || {}).length;
+        if (profileFieldCount === 0) {
+          return JSON.stringify({
+            success: false,
+            action: 'fill_form_error',
+            errorType: 'empty_scope',
+            message: `No ${fillScope.replace('_only', '')} details found in your profile. Save some details first.`
+          });
+        }
+        let formFields = Array.isArray(pageContext?.formFields) ? pageContext.formFields : [];
+        if (!formFields.length && pageContext?.content) {
+          const detectResult = await callClaude({
+            systemPrompt:
+              'You are a form field detector. Analyze the webpage content and identify all fillable form fields. Return ONLY a JSON array. No other text.\n\nEach field object:\n{\n  "selector": "CSS selector or field identifier",\n  "label": "visible label text",\n  "placeholder": "placeholder text if any",\n  "fieldType": "text|email|tel|number|select|radio|checkbox|textarea|date",\n  "name": "field name attribute if visible in content",\n  "required": true or false,\n  "options": ["for select/radio only — array of option values"]\n}',
+            messages: [
+              {
+                role: 'user',
+                content: `Page: ${pageContext.title}\nURL: ${pageContext.url}\n\nContent:\n${pageContext.content}`
+              }
+            ],
+            tools: null,
+            maxTokens: 1200
+          });
+          if (detectResult?.success) {
+            try {
+              const raw = (extractTextFromContent(detectResult.content) || '')
+                .replace(/```json\n?/g, '')
+                .replace(/```\n?/g, '')
+                .trim();
+              formFields = JSON.parse(raw);
+            } catch {
+              formFields = [];
+            }
+          }
+        }
+        if (!formFields.length) {
+          return JSON.stringify({
+            success: false,
+            action: 'fill_form_error',
+            errorType: 'no_fields',
+            message:
+              "I couldn't detect any fillable form fields on this page. Make sure you're on a page with a form, then try again."
+          });
+        }
+        const mappingResult = await callClaude({
+          systemPrompt:
+            'You are an expert at mapping personal profile data to web form fields. Your job is to intelligently match values from a user\'s profile to the correct form fields.\n\nRules for matching:\n- Match by semantic meaning, not exact text: "Full Name" matches "fullName", "Student Name", "Applicant Name", "Name of candidate"\n- For email fields: always use the email value\n- For phone/mobile fields: use the phone value\n- For date fields: format as YYYY-MM-DD unless field clearly expects another format\n- For select/dropdown fields: choose the closest matching option from the options array\n- For radio buttons: select the option that matches the profile value\n- For checkboxes: check if the profile indicates this option applies\n\nNEVER fill these field types (return "SKIP" for these):\n- Password fields\n- CAPTCHA fields\n- File upload fields\n- Fields labeled "confirm password" or "verify email" (already handled)\n- Hidden fields\n\nReturn ONLY a JSON array of fill instructions. No other text.\n\nEach instruction:\n{\n  "selector": "exact selector from the form fields list",\n  "value": "the value to fill in",\n  "fieldType": "text|email|tel|select|radio|checkbox|textarea|date",\n  "fieldLabel": "the field\'s label (for display in review UI)",\n  "confidence": "high|medium|low",\n  "skip": false,\n  "skipReason": null\n}\n\nFor fields that should be skipped:\n{\n  "selector": "...",\n  "fieldLabel": "...",\n  "skip": true,\n  "skipReason": "reason why this field cannot be filled"\n}',
+          messages: [
+            {
+              role: 'user',
+              content: `Form context: ${formContext || pageContext.title || 'Unknown form'}\nPage URL: ${pageContext.url}\n\nUser's profile (flat key-value):\n${JSON.stringify(scopedProfile, null, 2)}\n\nForm fields detected on page:\n${JSON.stringify(formFields, null, 2)}\n\nMap the user's profile values to the correct form fields.`
+            }
+          ],
+          tools: null,
+          maxTokens: 1500
+        });
+        if (!mappingResult?.success) {
+          return JSON.stringify({
+            success: false,
+            action: 'fill_form_error',
+            errorType: 'mapping_failed',
+            message: 'Could not map your profile to the form fields. Please try again.'
+          });
+        }
+        let fillInstructions;
+        try {
+          const raw = (extractTextFromContent(mappingResult.content) || '')
+            .replace(/```json\n?/g, '')
+            .replace(/```\n?/g, '')
+            .trim();
+          fillInstructions = JSON.parse(raw);
+        } catch (e) {
+          return JSON.stringify({
+            success: false,
+            action: 'fill_form_error',
+            errorType: 'parse_failed',
+            message: 'Received an invalid mapping response. Please try again.'
+          });
+        }
+        const toFill = Array.isArray(fillInstructions) ? fillInstructions.filter((f) => !f?.skip) : [];
+        const skipped = Array.isArray(fillInstructions) ? fillInstructions.filter((f) => f?.skip) : [];
+        const highConf = toFill.filter((f) => f?.confidence === 'high').length;
+        const lowConf = toFill.filter((f) => f?.confidence === 'low').length;
+        if (toFill.length === 0) {
+          return JSON.stringify({
+            success: false,
+            action: 'fill_form_error',
+            errorType: 'no_matches',
+            message:
+              `Found ${formFields.length} form fields but none matched your saved profile. Your profile may be missing the required information. Try saving more details.`
+          });
+        }
+        console.log(
+          '[TOOL fill_form] Mapping complete —',
+          'fillable:',
+          toFill.length,
+          'skipped:',
+          skipped.length,
+          'high confidence:',
+          highConf,
+          'low confidence:',
+          lowConf
+        );
+        return JSON.stringify({
+          success: true,
+          action: 'fill_form_ready',
+          fillInstructions: toFill,
+          skippedFields: skipped,
+          stats: {
+            totalFormFields: formFields.length,
+            fieldsToFill: toFill.length,
+            fieldsSkipped: skipped.length,
+            highConfidence: highConf,
+            lowConfidence: lowConf
+          },
+          requiresReview: lowConf > 0,
+          skipConfirmation: !!skipConfirmation,
+          message: `Ready to fill ${toFill.length} field${toFill.length !== 1 ? 's' : ''} (${highConf} high confidence, ${lowConf} needs review)`
+        });
       }
       case 'extract_structured_data': {
         try {

@@ -26,6 +26,9 @@ const state = {
   totalTokensThisSession: 0
 };
 
+let profilePanelOpen = false;
+let cachedProfile = null;
+
 const PRESET_COMMANDS = {
   gmail: [
     { label: '✉️ Draft Reply', message: 'Draft a professional reply to this email thread' },
@@ -52,10 +55,15 @@ const PRESET_COMMANDS = {
     { label: '📰 TL;DR', message: 'Give me a TL;DR of this article' },
     { label: '🔍 Key Facts', message: 'Extract the key facts and data points from this article' }
   ],
+  jobboard: [
+    { label: '📝 Auto-Fill Application', message: 'Fill this job application form with my details' }
+  ],
   generic: [
     { label: '📝 Summarize', message: 'Summarize the main content of this page' },
     { label: '❓ Explain', message: 'Explain what this page is about' },
-    { label: '💬 Ask', message: 'What can you help me with on this page?' }
+    { label: '💬 Ask', message: 'What can you help me with on this page?' },
+    { label: '📋 Fill This Form', message: 'Fill this form for me using my saved details' },
+    { label: '💾 Save My Details', action: 'save_details_prompt', message: null }
   ]
 };
 
@@ -315,11 +323,130 @@ function renderPresetCommands(pt) {
     b.className = 'cp-pill';
     b.textContent = it.label;
     b.style.animationDelay = `${idx * 50}ms`;
-    b.addEventListener('click', () => sendMessage(it.message));
+    b.addEventListener('click', () => {
+      if (it && it.action === 'save_details_prompt') {
+        const template = 'Save my details: Name: , Email: , Phone: , College: , Year: ';
+        inputEl.value = template;
+        inputEl.focus();
+        const cursorPos = template.indexOf('Name: ') + 6;
+        inputEl.setSelectionRange(cursorPos, cursorPos);
+        sendBtn.disabled = !inputEl.value.trim();
+        autoResize();
+        return;
+      }
+      sendMessage(it.message);
+    });
     presetsEl.appendChild(b);
   });
 }
 
+document.getElementById('profile-icon-btn')?.addEventListener('click', openProfilePanel);
+document.getElementById('profile-back-btn')?.addEventListener('click', closeProfilePanel);
+document.getElementById('profile-update-btn')?.addEventListener('click', () => {
+  closeProfilePanel();
+  inputEl.value = 'Update my details: ';
+  inputEl.focus();
+  inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+  sendBtn.disabled = !inputEl.value.trim();
+});
+document.getElementById('profile-delete-all-btn')?.addEventListener('click', async () => {
+  if (confirm('Delete all your saved profile data? This cannot be undone.')) {
+    await deleteAllProfileData();
+  }
+});
+
+async function openProfilePanel() {
+  profilePanelOpen = true;
+  const panel = document.getElementById('profile-panel');
+  panel.classList.remove('hidden');
+  panel.classList.add('visible');
+  await loadAndRenderProfile();
+}
+
+function closeProfilePanel() {
+  profilePanelOpen = false;
+  const panel = document.getElementById('profile-panel');
+  panel.classList.remove('visible');
+  panel.classList.add('hidden');
+}
+
+async function loadAndRenderProfile() {
+  const userId = state.userId || 'anonymous';
+  const result = await callBackendAPI(`/api/profile/${userId}`, 'GET');
+  const emptyState = document.getElementById('profile-empty-state');
+  const profileContent = document.getElementById('profile-content');
+  const lastUpdated = document.getElementById('profile-last-updated');
+  if (!result.success || !result.data?.data?.details || Object.keys(result.data.data.details).length === 0) {
+    emptyState.classList.remove('hidden');
+    profileContent.classList.add('hidden');
+    return;
+  }
+  cachedProfile = result.data.data;
+  emptyState.classList.add('hidden');
+  profileContent.classList.remove('hidden');
+  if (cachedProfile.updated_at) {
+    const date = new Date(cachedProfile.updated_at);
+    lastUpdated.textContent = `Last updated: ${date.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric'
+    })}`;
+  } else {
+    lastUpdated.textContent = '';
+  }
+  profileContent.innerHTML = renderProfileCategories(cachedProfile.details || {});
+}
+
+function renderProfileCategories(details) {
+  const categoryConfig = {
+    personal: { icon: '👤', label: 'Personal Info' },
+    academic: { icon: '🎓', label: 'Academic Details' },
+    professional: { icon: '💼', label: 'Professional Info' },
+    address: { icon: '📍', label: 'Address' },
+    custom: { icon: '⚙️', label: 'Custom Fields' }
+  };
+  let html = '';
+  for (const [category, fields] of Object.entries(details || {})) {
+    if (!fields || typeof fields !== 'object' || Object.keys(fields).length === 0) continue;
+    const config = categoryConfig[category] || { icon: '📋', label: category };
+    const items = Object.entries(fields)
+      .map(([key, value]) => {
+        if (!value || (Array.isArray(value) && !value.length)) return '';
+        const displayValue = Array.isArray(value) ? value.join(', ') : String(value);
+        const displayKey = key.replace(/([A-Z])/g, ' $1').replace(/^./, (s) => s.toUpperCase());
+        return `
+           <div class="profile-field" data-category="${category}" data-key="${key}">
+             <span class="profile-field-key">${displayKey}</span>
+             <span class="profile-field-value">${displayValue}</span>
+           </div>`;
+      })
+      .join('');
+    if (!items) continue;
+    html += `
+     <div class="profile-category">
+       <div class="profile-category-header">
+         <span class="profile-category-icon">${config.icon}</span>
+         <span class="profile-category-label">${config.label}</span>
+       </div>
+       <div class="profile-fields">
+         ${items}
+       </div>
+     </div>`;
+  }
+  return html || '<p class="profile-no-data">No details saved yet.</p>';
+}
+
+async function deleteAllProfileData() {
+  const userId = state.userId || 'anonymous';
+  const result = await callBackendAPI(`/api/profile/${userId}`, 'DELETE');
+  if (result.success) {
+    cachedProfile = null;
+    showToast('Profile data deleted.');
+    await loadAndRenderProfile();
+  } else {
+    showToast('Failed to delete profile. Please try again.', 3000);
+  }
+}
 function setPageBadge(pt) {
   const badgeText = pageTypeBadge(pt);
   pageBadge.textContent = badgeText;
@@ -570,6 +697,14 @@ async function sendMessage(userMessage) {
     state.sessionTokens += usedTokens;
     state.lastResponseMs = state.lastResponseTimeMs;
     renderMessage('assistant', assistantEntry.content, assistantEntry.toolUsed, assistantEntry.messageId, assistantEntry.toolsCalledChain, assistantEntry.iterations, assistantEntry.usage);
+    try {
+      if (d.fillPayload && d.fillPayload.action === 'fill_form_ready') {
+        const formFields = await scanCurrentPageFormFields();
+        await showFillReviewUI(d.fillPayload, formFields);
+      }
+    } catch (e) {
+      console.warn('[SidePanel] Fill review UI initialization failed:', e?.message || e);
+    }
     updateDevPanel();
     updateDebugPanel();
   } catch (unexpectedError) {
@@ -582,6 +717,164 @@ async function sendMessage(userMessage) {
     focusInput();
     sendBtn.disabled = false;
   }
+}
+
+async function scanCurrentPageFormFields() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_FORM_FIELDS' });
+    return (response && response.fields) || [];
+  } catch (err) {
+    console.warn('[SidePanel] Could not scan form fields:', err?.message || err);
+    return [];
+  }
+}
+
+async function showFillReviewUI(fillPayload, scannedFields) {
+  const { fillInstructions, skippedFields, stats } = fillPayload || {
+    fillInstructions: [],
+    skippedFields: [],
+    stats: { fieldsToFill: 0, highConfidence: 0, lowConfidence: 0 }
+  };
+  const reviewCard = document.createElement('div');
+  reviewCard.className = 'fill-review-card';
+  reviewCard.id = 'fill-review-card';
+  reviewCard.innerHTML = `
+    <div class="fill-review-header">
+      <span class="fill-review-icon">📋</span>
+      <span class="fill-review-title">Ready to Fill ${stats.fieldsToFill} Fields</span>
+      <span class="fill-stats">${stats.highConfidence} confirmed · ${stats.lowConfidence} to review</span>
+    </div>
+    <div class="fill-fields-list">
+      ${fillInstructions
+        .map(
+          (instr) => `
+        <div class="fill-field-item ${instr.confidence === 'low' ? 'fill-field-low-conf' : ''}">
+          <div class="fill-field-info">
+            <span class="fill-field-label">${instr.fieldLabel || instr.selector}</span>
+            ${instr.confidence === 'low' ? '<span class="fill-confidence-badge">Review</span>' : ''}
+          </div>
+          <span class="fill-field-value">${String(instr.value || '').slice(0, 140)}</span>
+        </div>`
+        )
+        .join('')}
+      ${
+        (Array.isArray(skippedFields) && skippedFields.length > 0)
+          ? `
+        <div class="fill-skipped-section">
+          <div class="fill-skipped-label">Skipped (${skippedFields.length})</div>
+          ${skippedFields
+            .map(
+              (f) => `
+            <div class="fill-field-item fill-field-skipped">
+              <span class="fill-field-label">${f.fieldLabel || f.selector}</span>
+              <span class="fill-skip-reason">${f.skipReason || 'Skipped'}</span>
+            </div>`
+            )
+            .join('')}
+        </div>`
+          : ''
+      }
+    </div>
+    <div class="fill-review-actions">
+      <button id="fill-confirm-btn" class="btn-fill-confirm">✅ Fill ${stats.fieldsToFill} Fields</button>
+      <button id="fill-cancel-btn" class="btn-fill-cancel">Cancel</button>
+    </div>
+    <div class="fill-disclaimer">
+      ContextPilot will fill these fields but will NOT submit the form.
+      Always review before submitting.
+    </div>
+  `;
+  chatEl.appendChild(reviewCard);
+  try {
+    reviewCard.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  } catch {}
+  const confirmBtn = reviewCard.querySelector('#fill-confirm-btn');
+  const cancelBtn = reviewCard.querySelector('#fill-cancel-btn');
+  confirmBtn?.addEventListener('click', async () => {
+    await executeFillInstructions(fillPayload.fillInstructions, reviewCard);
+  });
+  cancelBtn?.addEventListener('click', () => {
+    reviewCard.remove();
+    renderMessage('assistant', 'Form fill cancelled. Your data is still saved for next time.', null, null, null, null, null, true);
+  });
+}
+
+async function executeFillInstructions(fillInstructions, reviewCard) {
+  const confirmBtn = document.getElementById('fill-confirm-btn');
+  if (confirmBtn) {
+    confirmBtn.textContent = '⏳ Filling...';
+    confirmBtn.disabled = true;
+  }
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: 'FILL_FORM_FIELDS', fillInstructions });
+    if (!response || !response.success) {
+      throw new Error('Fill execution failed');
+    }
+    const results = Array.isArray(response.results) ? response.results : [];
+    const successCount = results.filter((r) => r.success && !r.skipped).length;
+    const failedCount = results.filter((r) => !r.success && !r.skipped).length;
+    reviewCard.innerHTML = `
+      <div class="fill-result-header">
+        <span class="fill-result-icon">${failedCount === 0 ? '✅' : '⚠️'}</span>
+        <span class="fill-result-title">
+          Filled ${successCount} field${successCount !== 1 ? 's' : ''}${failedCount > 0 ? ` · ${failedCount} failed` : ''}
+        </span>
+      </div>
+      <div class="fill-result-list">
+        ${results
+          .map(
+            (r) => `
+          <div class="fill-result-item ${r.success ? 'fill-result-ok' : r.skipped ? 'fill-result-skip' : 'fill-result-fail'}">
+            <span>${r.success ? '✓' : r.skipped ? '–' : '✗'}</span>
+            <span class="fill-result-label">${r.fieldLabel || r.selector}</span>
+            ${r.success ? `<span class="fill-result-val">${String(r.value || '').slice(0, 140)}</span>` : ''}
+            ${!r.success && !r.skipped ? `<span class="fill-result-err">${r.message || 'Failed'}</span>` : ''}
+          </div>`
+          )
+          .join('')}
+      </div>
+      <div class="fill-result-footer">
+        ✋ Please review all filled fields before submitting.
+      </div>
+    `;
+    const feedbackDiv = document.createElement('div');
+    feedbackDiv.className = 'fill-feedback';
+    feedbackDiv.innerHTML = `
+      <span class="fill-feedback-label">Was this fill accurate?</span>
+      <button class="fill-fb-yes">👍 Yes</button>
+      <button class="fill-fb-no">👎 No</button>
+    `;
+    reviewCard.appendChild(feedbackDiv);
+    const yesBtn = feedbackDiv.querySelector('.fill-fb-yes');
+    const noBtn = feedbackDiv.querySelector('.fill-fb-no');
+    yesBtn?.addEventListener('click', () => handleFillFeedback(true));
+    noBtn?.addEventListener('click', () => handleFillFeedback(false));
+    showToast(`Filled ${successCount} field${successCount !== 1 ? 's' : ''} ✅`);
+  } catch (err) {
+    reviewCard.innerHTML = `
+      <div class="fill-error">
+        <span>⚠️</span>
+        <span>Could not fill the form. Make sure the form is visible on the page.</span>
+        <button id="fill-dismiss-btn">Dismiss</button>
+      </div>
+    `;
+    const dismiss = reviewCard.querySelector('#fill-dismiss-btn');
+    dismiss?.addEventListener('click', () => reviewCard.remove());
+    console.error('[SidePanel] Fill execution error:', err);
+  }
+}
+
+function handleFillFeedback(positive) {
+  try {
+    const lastAssistant = [...(state.messages || [])].reverse().find((m) => m.role === 'assistant');
+    const msgId = lastAssistant?.messageId || null;
+    if (msgId) {
+      submitFeedback(msgId, positive ? 'positive' : 'negative', positive ? null : 'Form fill inaccurate');
+    }
+    showToast(positive ? 'Thanks! We’ll keep doing that.' : 'Thanks — we’ll improve next time.');
+  } catch {}
 }
 
 function autoResize() {

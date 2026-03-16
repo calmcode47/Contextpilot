@@ -34,7 +34,14 @@ function makeLimiter(windowMs, limit, { skip, keyGenerator } = {}) {
     handler: (req, res) => {
       const retrySeconds = Math.ceil(windowMs / 1000);
       res.setHeader('Retry-After', String(retrySeconds));
-      res.status(429).json({ error: 'Too many requests', retryAfter: `${retrySeconds} seconds` });
+      res.status(429).json({
+        error: 'Too many requests',
+        errorType: 'RATE_LIMITED',
+        retryAfter: retrySeconds,
+        limit: req.rateLimit?.limit ?? limit,
+        remaining: req.rateLimit?.remaining ?? 0,
+        resetAt: req.rateLimit?.resetTime ? new Date(req.rateLimit.resetTime).toISOString() : null
+      });
     },
     skip: typeof skip === 'function' ? skip : undefined,
     keyGenerator:
@@ -47,7 +54,10 @@ function makeLimiter(windowMs, limit, { skip, keyGenerator } = {}) {
 export const generalLimiter = makeLimiter(15 * 60 * 1000, 100, {
   skip: (req) => req.path === '/health'
 });
-export const chatLimiter = makeLimiter(60 * 1000, 30, {
+export const chatLimiter = makeLimiter(
+  60 * 1000,
+  parseInt(process.env.CHAT_RATE_LIMIT_MAX || '30', 10),
+  {
   skip: (req) => req.path === '/health',
   keyGenerator: (req) => {
     try {

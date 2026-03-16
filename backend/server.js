@@ -5,6 +5,7 @@ import express from 'express';
 import cors from 'cors';
 
 import config from './lib/config.js';
+import { validateAIProviderConfig } from './lib/config.js';
 import { corsOptions, generalLimiter, chatLimiter, feedbackLimiter } from './middleware/security.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -12,6 +13,8 @@ import chatRoutes from './routes/chat.js';
 import feedbackRoutes from './routes/feedback.js';
 import historyRoutes from './routes/history.js';
 import pingRoutes from './routes/ping.js';
+import profileRoutes from './routes/profile.js';
+import { validateDatabaseSchema } from './lib/supabase.js';
 
 const app = express();
 
@@ -20,6 +23,9 @@ console.log(`AI provider: ${config.AI_PROVIDER} model: ${config.AI_PROVIDER === 
 if (config.NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }
+
+validateAIProviderConfig();
+await validateDatabaseSchema();
 
 app.use(generalLimiter);
 app.use(cors(corsOptions));
@@ -48,6 +54,7 @@ app.use('/api/chat', chatLimiter, chatRoutes);
 app.use('/api/feedback', feedbackLimiter, feedbackRoutes);
 app.use('/api/history', historyRoutes);
 app.use('/api/ping', pingRoutes);
+app.use('/api/profile', profileRoutes);
 
 // Handle CORS preflight for all routes
 // Note: CORS preflights are handled by the global cors middleware above.

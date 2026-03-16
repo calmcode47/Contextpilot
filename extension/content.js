@@ -276,6 +276,241 @@ if (mainContent) {
   contentObserver.observe(mainContent, { childList: true, subtree: true });
 }
 
+function scanFormFields() {
+  const fields = [];
+  const fieldSelectors =
+    'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select';
+  const allFields = document.querySelectorAll(fieldSelectors);
+  allFields.forEach((field, index) => {
+    if (!field.offsetParent && field.type !== 'hidden') return;
+    const descriptor = {
+      selector: generateSelector(field, index),
+      fieldType: getFieldType(field),
+      label: extractFieldLabel(field),
+      placeholder: field.placeholder || null,
+      name: field.name || field.id || null,
+      required: field.required || field.getAttribute('aria-required') === 'true',
+      options: getFieldOptions(field),
+      currentValue: field.value || null,
+      ariaLabel: field.getAttribute('aria-label') || null
+    };
+    if (descriptor.label || descriptor.placeholder || descriptor.name || descriptor.ariaLabel) {
+      fields.push(descriptor);
+    }
+  });
+  try {
+    console.log('[ContextPilot Content] Scanned', fields.length, 'form fields');
+  } catch {}
+  return fields;
+}
+
+function generateSelector(element, fallbackIndex) {
+  if (element.id) return `#${CSS.escape(element.id)}`;
+  if (element.name) return `[name="${CSS.escape(element.name)}"]`;
+  const ariaLabel = element.getAttribute('aria-label');
+  if (ariaLabel) return `[aria-label="${CSS.escape(ariaLabel)}"]`;
+  const dataParams = element.getAttribute('data-params');
+  if (dataParams) return `[data-params="${CSS.escape(dataParams)}"]`;
+  if (element.placeholder) return `[placeholder="${CSS.escape(element.placeholder)}"]`;
+  const tag = element.tagName.toLowerCase();
+  const parent = element.parentElement;
+  if (parent) {
+    const siblings = parent.querySelectorAll(tag);
+    const idx = Array.from(siblings).indexOf(element);
+    return `${tag}:nth-of-type(${idx + 1})`;
+  }
+  return `${element.tagName.toLowerCase()}:nth-child(${(fallbackIndex || 0) + 1})`;
+}
+
+function extractFieldLabel(field) {
+  if (field.id) {
+    const label = document.querySelector(`label[for="${CSS.escape(field.id)}"]`);
+    if (label) return label.textContent.trim().replace(/\s+/g, ' ').replace(/\*$/, '').trim();
+  }
+  const ariaLabel = field.getAttribute('aria-label');
+  if (ariaLabel) return ariaLabel.trim();
+  const labelledBy = field.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const labelEl = document.getElementById(labelledBy);
+    if (labelEl) return labelEl.textContent.trim();
+  }
+  const wrappingLabel = field.closest('label');
+  if (wrappingLabel) {
+    const clone = wrappingLabel.cloneNode(true);
+    clone.querySelectorAll('input, select, textarea').forEach((el) => el.remove());
+    return clone.textContent.trim().replace(/\s+/g, ' ');
+  }
+  const parent = field.parentElement;
+  if (parent) {
+    const prevSibling = parent.previousElementSibling;
+    if (prevSibling) return prevSibling.textContent.trim().substring(0, 100);
+  }
+  const googleFormQuestion = field
+    .closest('[role="listitem"]')
+    ?.querySelector('[role="heading"], .freebirdFormviewerComponentsQuestionBaseTitle');
+  if (googleFormQuestion) return googleFormQuestion.textContent.trim();
+  return field.name || field.id || field.placeholder || null;
+}
+
+function getFieldType(field) {
+  const tag = field.tagName.toLowerCase();
+  if (tag === 'select') return 'select';
+  if (tag === 'textarea') return 'textarea';
+  const type = (field.type || 'text').toLowerCase();
+  return type;
+}
+
+function getFieldOptions(field) {
+  if (field.tagName.toLowerCase() === 'select') {
+    return Array.from(field.options).map((o) => ({
+      value: o.value,
+      text: o.textContent.trim()
+    }));
+  }
+  if (field.type === 'radio') {
+    const name = field.name;
+    if (name) {
+      return Array.from(
+        document.querySelectorAll(`input[type="radio"][name="${CSS.escape(name)}"]`)
+      ).map((r) => ({
+        value: r.value,
+        label: extractFieldLabel(r) || r.value
+      }));
+    }
+  }
+  return [];
+}
+
+function fillFormField(selector, value, fieldType) {
+  try {
+    const element = document.querySelector(selector);
+    if (!element) {
+      const byLabel = findFieldByLabel(selector);
+      if (!byLabel) {
+        return { success: false, message: `Field not found: ${selector}` };
+      }
+      return fillFormField(byLabel, value, fieldType);
+    }
+    switch (fieldType) {
+      case 'select':
+        return fillSelectField(element, value);
+      case 'radio':
+        return fillRadioField(element.name || selector, value);
+      case 'checkbox':
+        return fillCheckboxField(element, value);
+      case 'date':
+        return fillDateField(element, value);
+      default:
+        return fillTextField(element, value);
+    }
+  } catch (err) {
+    return { success: false, message: `Error filling field: ${err.message}` };
+  }
+}
+
+function fillTextField(element, value) {
+  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+    element.tagName === 'TEXTAREA'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype,
+    'value'
+  )?.set;
+  if (nativeInputValueSetter) {
+    nativeInputValueSetter.call(element, value);
+  } else {
+    element.value = value;
+  }
+  try {
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, data: value }));
+    element.dispatchEvent(new Event('blur', { bubbles: true }));
+  } catch {
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    element.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+  return { success: true, message: `Filled: ${value}` };
+}
+
+function fillSelectField(element, value) {
+  const valueLower = String(value || '').toLowerCase().trim();
+  for (const option of element.options) {
+    if (String(option.value || '').toLowerCase() === valueLower) {
+      element.value = option.value;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return { success: true, message: `Selected: ${option.text}` };
+    }
+  }
+  for (const option of element.options) {
+    const txt = String(option.text || '').toLowerCase();
+    if (txt.includes(valueLower) || valueLower.includes(txt)) {
+      element.value = option.value;
+      element.dispatchEvent(new Event('change', { bubbles: true }));
+      return { success: true, message: `Selected (text match): ${option.text}` };
+    }
+  }
+  return { success: false, message: `No matching option for "${value}" in dropdown` };
+}
+
+function fillRadioField(fieldNameOrSelector, value) {
+  const valueLower = String(value || '').toLowerCase().trim();
+  const radios = document.querySelectorAll(
+    `input[type="radio"][name="${CSS.escape(fieldNameOrSelector)}"]`
+  );
+  if (!radios.length) return { success: false, message: 'Radio group not found' };
+  for (const radio of radios) {
+    const radioLabel = extractFieldLabel(radio) || radio.value;
+    if (
+      String(radio.value || '').toLowerCase() === valueLower ||
+      String(radioLabel || '').toLowerCase().includes(valueLower) ||
+      valueLower.includes(String(radio.value || '').toLowerCase())
+    ) {
+      radio.click();
+      radio.dispatchEvent(new Event('change', { bubbles: true }));
+      return { success: true, message: `Selected radio: ${radio.value}` };
+    }
+  }
+  return { success: false, message: `No radio option matches "${value}"` };
+}
+
+function fillCheckboxField(element, value) {
+  const shouldCheck = ['true', 'yes', '1', 'checked', 'on'].includes(String(value).toLowerCase());
+  if (element.checked !== shouldCheck) {
+    element.click();
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  return { success: true, message: `Checkbox ${shouldCheck ? 'checked' : 'unchecked'}` };
+}
+
+function fillDateField(element, value) {
+  let normalized = String(value || '');
+  if (normalized.includes('/')) {
+    const parts = normalized.split('/');
+    if (parts.length === 3) {
+      if (parts[2].length === 4) {
+        normalized = `${parts[2]}-${String(parts[0]).padStart(2, '0')}-${String(parts[1]).padStart(
+          2,
+          '0'
+        )}`;
+      }
+    }
+  }
+  return fillTextField(element, normalized);
+}
+
+function findFieldByLabel(labelText) {
+  const allFields = document.querySelectorAll('input, textarea, select');
+  const needle = String(labelText || '').toLowerCase();
+  for (const field of allFields) {
+    const label = extractFieldLabel(field);
+    if (label && String(label).toLowerCase().includes(needle)) {
+      return generateSelector(field, 0);
+    }
+  }
+  return null;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   try {
     if (message && message.type === 'GET_PAGE_CONTENT') {
@@ -291,6 +526,57 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         content: data.content,
         pageType: data.pageType
       });
+      return true;
+    }
+    if (message && message.type === 'SCAN_FORM_FIELDS') {
+      const fields = scanFormFields();
+      sendResponse({ success: true, fields, count: fields.length });
+      return true;
+    }
+    if (message && message.type === 'FILL_FORM_FIELDS') {
+      (async () => {
+        const fillInstructions = Array.isArray(message.fillInstructions)
+          ? message.fillInstructions
+          : [];
+        const results = [];
+        for (const instruction of fillInstructions) {
+          if (instruction.skip) {
+            results.push({
+              selector: instruction.selector,
+              success: false,
+              skipped: true
+            });
+            continue;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          const result = fillFormField(
+            instruction.selector,
+            instruction.value,
+            instruction.fieldType
+          );
+          results.push({
+            selector: instruction.selector,
+            fieldLabel: instruction.fieldLabel,
+            value: instruction.value,
+            ...result
+          });
+          try {
+            console.log(
+              '[ContextPilot Fill]',
+              result.success ? '✅' : '❌',
+              instruction.fieldLabel || instruction.selector,
+              '→',
+              instruction.value
+            );
+          } catch {}
+        }
+        const successCount = results.filter((r) => r.success).length;
+        sendResponse({
+          success: true,
+          results,
+          summary: `Filled ${successCount}/${fillInstructions.length} fields`
+        });
+      })();
       return true;
     }
   } catch (e) {

@@ -101,6 +101,17 @@ router.post('/', async (req, res, next) => {
         userCorrections
       });
     } catch (err) {
+      if (err && err.providerErrorType) {
+        const response = {
+          error: err.message || 'AI provider call failed',
+          errorType: err.providerErrorType,
+          details: process.env.NODE_ENV !== 'production' ? err.devMessage : undefined
+        };
+        if (err.retryAfter) {
+          res.setHeader('Retry-After', err.retryAfter);
+        }
+        return res.status(err.httpStatus || 503).json(response);
+      }
       return res.status(500).json({ error: 'Agent failed', details: err?.message || String(err) });
     }
 
@@ -122,7 +133,8 @@ router.post('/', async (req, res, next) => {
       usage: {
         inputTokens: agentResult.inputTokens,
         outputTokens: agentResult.outputTokens
-      }
+      },
+      fillPayload: agentResult.fillPayload || null
     });
   } catch (err) {
     next(err);

@@ -161,6 +161,77 @@ What it produces: A structured explanation: (1) what it is, (2) why it matters, 
       },
       required: ['conceptToExplain']
     }
+  },
+  {
+    name: 'save_profile',
+    description: `Saves or updates the user's personal details for form auto-fill.
+Use this tool when the user:
+- Explicitly asks to save, remember, or store their personal details
+- Says phrases like "save my details", "remember my info", "store my information"
+- Provides personal information like name, email, phone, college, address
+- Wants to update a specific piece of their stored information
+- Says "my name is", "I'm studying at", "I work at", "I live in"
+
+This tool parses natural language into structured profile data and
+persists it to the database for future form-filling use.
+
+Do NOT use this tool just because the user mentions personal info in passing.
+Only use it when the user clearly wants to save that information.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        rawInput: {
+          type: 'string',
+          description: "The user's exact message containing their personal details to save"
+        },
+        updateMode: {
+          type: 'string',
+          enum: ['full_update', 'partial_update', 'append'],
+          description:
+            'full_update: replace all profile data. partial_update: update only mentioned fields. append: add to existing without removing anything. Default: partial_update'
+        }
+      },
+      required: ['rawInput']
+    }
+  },
+  {
+    name: 'fill_form',
+    description: `Automatically fills form fields on the current page using the user's
+saved profile details. Use this tool when the user:
+- Says "fill this form", "fill in my details", "auto-fill this", "complete this form"
+- Asks ContextPilot to fill out a registration, application, or survey
+- Is on a page containing a form with input fields
+- Says "use my saved details for this form"
+
+This tool:
+1. Reads the form fields present on the current page (provided in pageContext)
+2. Fetches the user's saved profile from the database
+3. Intelligently maps profile values to form fields using AI reasoning
+4. Returns fill instructions that the extension executes on the page
+
+Do NOT use this tool if:
+- The user has not saved any profile details yet
+- The page has no form fields
+- The user is asking about a form conceptually rather than wanting to fill it`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        formContext: {
+          type: 'string',
+          description:
+            "Optional: specific form name or context user mentioned e.g. 'college application form', 'event registration'"
+        },
+        fillScope: {
+          type: 'string',
+          enum: ['all_fields', 'personal_only', 'academic_only', 'professional_only'],
+          description: 'Which profile sections to use for filling. Default: all_fields'
+        },
+        skipConfirmation: {
+          type: 'boolean',
+          description: 'If true, fill immediately without showing preview. Default: false (always show preview)'
+        }
+      }
+    }
   }
 ];
 
