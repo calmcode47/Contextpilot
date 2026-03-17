@@ -16,6 +16,29 @@ import Anthropic from '@anthropic-ai/sdk';
 import config from './config.js';
 import { toGeminiTools } from '../agent/tools.js';
 
+// Gemini throttling: keep concurrency low to avoid 429s.
+// This is intentionally simple (single-process in-memory queue).
+let geminiQueue = Promise.resolve();
+let geminiLastCallAtMs = 0;
+const GEMINI_MIN_INTERVAL_MS = Number(process.env.GEMINI_MIN_INTERVAL_MS || 1200);
+
+async function runGeminiQueued(fn) {
+  const run = async () => {
+    const now = Date.now();
+    const waitMs = Math.max(0, GEMINI_MIN_INTERVAL_MS - (now - geminiLastCallAtMs));
+    if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+    try {
+      return await fn();
+    } finally {
+      geminiLastCallAtMs = Date.now();
+    }
+  };
+  const p = geminiQueue.then(run, run);
+  // Ensure queue continues even if this call fails.
+  geminiQueue = p.catch(() => {});
+  return p;
+}
+
 let anthropicClient = null;
 if (config.AI_PROVIDER === 'anthropic') {
   anthropicClient = new Anthropic({
@@ -89,16 +112,56 @@ function classifyProviderError(error) {
       retryAfter: 0
     };
   }
-  if (status === 429 || /429|quota/i.test(message)) {
+  // Gemini can return 429 for both rate limiting and quota exhaustion (RESOURCE_EXHAUSTED).
+  // If the message indicates quota/billing, classify as QUOTA_EXCEEDED with actionable guidance.
+  if (
+    status === 429 &&
+    /RESOURCE_EXHAUSTED|exceeded your current quota|plan and billing|Quota exceeded for metric/i.test(message)
+  ) {
+    // Best-effort Retry-After extraction (Gemini sometimes embeds "Please retry in Xs").
+    let retryAfter = 60;
+    const m = message.match(/Please retry in\s+([0-9]+(?:\.[0-9]+)?)s/i);
+    if (m?.[1]) {
+      const s = Math.ceil(Number(m[1]));
+      if (Number.isFinite(s) && s > 0) retryAfter = Math.min(300, s);
+    }
     return {
       type: 'QUOTA_EXCEEDED',
       httpStatus: 503,
-      userMessage: 'AI provider quota exhausted. Please wait and retry, or switch providers.',
+      userMessage: 'Gemini quota is exhausted or unavailable for this project/key. Please check plan/billing.',
       devMessage:
-        'Gemini free-tier quota exceeded. Options:\n' +
-        '  1. Wait for quota reset (daily)\n' +
-        '  2. Set GEMINI_API_KEY to a paid-tier key\n' +
-        '  3. Switch AI_PROVIDER=anthropic with a valid ANTHROPIC_API_KEY',
+        'Gemini returned RESOURCE_EXHAUSTED (HTTP 429). This usually means the project/key has no available quota.\n' +
+        'If the error mentions limit: 0, free-tier quota is effectively disabled for this project.\n\n' +
+        'Fix on Google side:\n' +
+        '  1) Open the Gemini API rate-limit dashboard and confirm quotas are > 0\n' +
+        '  2) Ensure the API key is created/managed for Gemini API access (AI Studio key or properly configured Cloud key)\n' +
+        '  3) Verify billing/plan is active for the project if required\n' +
+        (details ? `\n\nDetails:\n${details}` : `\n\nRaw message:\n${message}`),
+      retryAfter
+    };
+  }
+
+  if (status === 429 || /429|too many requests|rate limit/i.test(message)) {
+    return {
+      type: 'RATE_LIMITED',
+      httpStatus: 503,
+      userMessage: 'AI provider is rate limiting requests. Please wait a few seconds and retry.',
+      devMessage:
+        'Gemini returned HTTP 429 (rate limit). This is often per-minute / per-second throttling,\n' +
+        'not the daily quota. Mitigations:\n' +
+        '  1) Reduce concurrency (queue requests)\n' +
+        '  2) Add backoff and retry-after handling\n' +
+        '  3) Ensure the extension is not firing multiple /api/chat calls per prompt\n' +
+        (details ? `\n\nDetails:\n${details}` : ''),
+      retryAfter: 10
+    };
+  }
+  if (/quota|RESOURCE_EXHAUSTED/i.test(message)) {
+    return {
+      type: 'QUOTA_EXCEEDED',
+      httpStatus: 503,
+      userMessage: 'AI provider quota exhausted. Please retry later.',
+      devMessage: details ? `${message}\n\nDetails:\n${details}` : message,
       retryAfter: 60
     };
   }
@@ -228,10 +291,12 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
       }
 
       async function sendWithModel(modelName) {
-        const cfg = { ...modelConfig, model: modelName };
-        const model = genAI.getGenerativeModel(cfg);
-        const chat = model.startChat({ history });
-        return chat.sendMessage(lastParts);
+        return runGeminiQueued(async () => {
+          const cfg = { ...modelConfig, model: modelName };
+          const model = genAI.getGenerativeModel(cfg);
+          const chat = model.startChat({ history });
+          return chat.sendMessage(lastParts);
+        });
       }
 
       let result;
@@ -240,7 +305,7 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
 
       let lastErr = null;
       for (const modelName of modelsToTry) {
-        const maxAttemptsPerModel = 2;
+        const maxAttemptsPerModel = 4;
         for (let attempt = 1; attempt <= maxAttemptsPerModel; attempt++) {
           try {
             result = await sendWithModel(modelName);
@@ -250,11 +315,12 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
             lastErr = err;
             const status = err?.status || err?.code || 0;
             const msg = String(err?.message || '');
-            if (String(status) === '429' || /Too Many Requests|quota/i.test(msg)) {
+            if (String(status) === '429' || /Too Many Requests|rate limit|quota/i.test(msg)) {
               console.warn(
                 `[GEMINI] Rate limit — model: ${modelName}. Attempt ${attempt}/${maxAttemptsPerModel}`
               );
-              const retryMs = 6000;
+              const base = 1500;
+              const retryMs = Math.min(30000, base * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 250);
               await new Promise((r) => setTimeout(r, retryMs));
               continue;
             }
