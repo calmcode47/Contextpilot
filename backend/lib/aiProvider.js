@@ -229,7 +229,10 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
   try {
     if (config.AI_PROVIDER === 'gemini') {
       const startedAt = Date.now();
-      const MAX_TOTAL_GEMINI_MS = Number(process.env.GEMINI_MAX_TOTAL_MS || 25000);
+      const toolsCount = Array.isArray(tools) ? tools.length : 0;
+      // Tool-calling requests can require multiple turns and are slower; give them a bigger budget.
+      const defaultBudgetMs = toolsCount > 0 ? 45000 : 25000;
+      const MAX_TOTAL_GEMINI_MS = Number(process.env.GEMINI_MAX_TOTAL_MS || defaultBudgetMs);
       const { GoogleGenerativeAI } = await import('@google/generative-ai');
       const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
       function convertMessagesToGeminiHistory(msgs) {
@@ -326,11 +329,15 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
       }
 
       let result;
-      const primaryModel = modelConfig.model;
+      const configuredModel = modelConfig.model;
+      // When tool calling is enabled, prefer a stable, widely-available model first to reduce 503s.
+      const preferStableToolsModel =
+        toolsCount > 0 && /^gemini-2\.5-/i.test(String(configuredModel || ''));
+      const primaryModel = preferStableToolsModel ? 'gemini-2.0-flash' : configuredModel;
       const modelsToTry = [primaryModel];
       // Fallbacks stay within Gemini (not switching providers).
       // Use tools-capable defaults; some overload periods affect specific models.
-      const fallbackModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+      const fallbackModels = [configuredModel, 'gemini-2.5-flash', 'gemini-2.0-flash'];
       for (const m of fallbackModels) {
         if (!modelsToTry.includes(m)) modelsToTry.push(m);
       }
