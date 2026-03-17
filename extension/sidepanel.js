@@ -472,57 +472,91 @@ function markContentFresh() {
 }
 
 async function callBackendAPI(endpoint, method, body) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
-  try {
-    const options = {
-      method: method || 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal
-    };
-    if (body) options.body = JSON.stringify(body);
-    const response = await fetch(`${CONFIG.API_BASE_URL}${endpoint}`, options);
-    clearTimeout(timeoutId);
-    if (response.status === 429) {
-      const retryAfter = response.headers.get('Retry-After') || '60';
-      return { success: false, code: 429, error: `Rate limited. Please wait ${retryAfter} seconds.` };
-    }
-    if (response.status === 401) {
-      return { success: false, code: 401, error: 'Authentication required.' };
-    }
-    if (response.status >= 500) {
-      let errorDetail = 'Server error';
-      try {
-        const errBody = await response.json();
-        errorDetail = errBody.details || errBody.error || errorDetail;
-      } catch {}
-      return { success: false, code: response.status, error: `Agent error: ${errorDetail}` };
-    }
-    if (!response.ok) {
-      let msg = `Request failed (${response.status})`;
-      try {
-        const errBody = await response.json();
-        const details = errBody.details || errBody.error;
-        if (details) msg = `Request failed (${response.status}): ${details}`;
-      } catch {}
-      return { success: false, code: response.status, error: msg };
-    }
+  const maxAttempts = Number(CONFIG.MAX_RETRIES || 1);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
     try {
-      const data = await response.json();
-      return { success: true, data };
-    } catch {
-      return { success: false, code: 0, error: 'Invalid response format from server.' };
+      const options = {
+        method: method || 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal
+      };
+      if (body) options.body = JSON.stringify(body);
+      const response = await fetch(`${CONFIG.API_BASE_URL}${endpoint}`, options);
+      clearTimeout(timeoutId);
+
+      // Provider throttling / overload: surface Retry-After and optionally retry once.
+      if (response.status === 429 || response.status === 503) {
+        const retryAfter = Number(response.headers.get('Retry-After') || '0') || 0;
+        let errBody = null;
+        try { errBody = await response.json(); } catch {}
+        const errType = errBody?.errorType || null;
+        const errMsg = errBody?.error || errBody?.details || 'Server temporarily unavailable';
+        const isTransient = response.status === 503 || errType === 'PROVIDER_OVERLOADED' || errType === 'RATE_LIMITED';
+        if (isTransient && attempt < maxAttempts) {
+          const waitMs = Math.min(15000, Math.max(1000, retryAfter ? retryAfter * 1000 : 1200 * attempt));
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        if (retryAfter) {
+          return {
+            success: false,
+            code: response.status,
+            error: `${errMsg} (retry in ${retryAfter}s)`
+          };
+        }
+        return { success: false, code: response.status, error: `Agent error: ${errMsg}` };
+      }
+
+      if (response.status === 401) {
+        return { success: false, code: 401, error: 'Authentication required.' };
+      }
+      if (response.status >= 500) {
+        let errorDetail = 'Server error';
+        try {
+          const errBody = await response.json();
+          errorDetail = errBody.details || errBody.error || errorDetail;
+        } catch {}
+        return { success: false, code: response.status, error: `Agent error: ${errorDetail}` };
+      }
+      if (!response.ok) {
+        let msg = `Request failed (${response.status})`;
+        try {
+          const errBody = await response.json();
+          const details = errBody.details || errBody.error;
+          if (details) msg = `Request failed (${response.status}): ${details}`;
+        } catch {}
+        return { success: false, code: response.status, error: msg };
+      }
+      try {
+        const data = await response.json();
+        return { success: true, data };
+      } catch {
+        return { success: false, code: 0, error: 'Invalid response format from server.' };
+      }
+    } catch (err) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError') {
+        // Allow one retry on timeout (sometimes Gemini tool chains are slow).
+        if (attempt < maxAttempts) continue;
+        return {
+          success: false,
+          code: 0,
+          error: `Request timed out after ${CONFIG.REQUEST_TIMEOUT_MS / 1000}s. The AI is taking too long — please retry.`
+        };
+      }
+      if (!navigator.onLine) {
+        return { success: false, code: 0, error: 'No internet connection.' };
+      }
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 600 * attempt));
+        continue;
+      }
+      return { success: false, code: 0, error: `Network error: ${err.message}` };
     }
-  } catch (err) {
-    clearTimeout(timeoutId);
-    if (err.name === 'AbortError') {
-      return { success: false, code: 0, error: `Request timed out after ${CONFIG.REQUEST_TIMEOUT_MS / 1000}s. The AI is taking too long — try a shorter message.` };
-    }
-    if (!navigator.onLine) {
-      return { success: false, code: 0, error: 'No internet connection.' };
-    }
-    return { success: false, code: 0, error: `Network error: ${err.message}` };
   }
+  return { success: false, code: 0, error: 'Request failed.' };
 }
 
 function scrollToBottom(animated = false) {

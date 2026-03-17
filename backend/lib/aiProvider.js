@@ -84,6 +84,30 @@ function classifyProviderError(error) {
     if (error?.details) details = String(error.details);
   } catch {}
   const status = error?.status || error?.statusCode || 0;
+  if (
+    status === 503 ||
+    /503|Service Unavailable|high demand|temporarily unavailable|overloaded/i.test(message)
+  ) {
+    let retryAfter = 15;
+    const m = message.match(/retry in\s+([0-9]+(?:\.[0-9]+)?)s/i);
+    if (m?.[1]) {
+      const s = Math.ceil(Number(m[1]));
+      if (Number.isFinite(s) && s > 0) retryAfter = Math.min(300, s);
+    }
+    return {
+      type: 'PROVIDER_OVERLOADED',
+      httpStatus: 503,
+      userMessage:
+        'Gemini is temporarily overloaded (high demand). Please retry shortly.',
+      devMessage:
+        'Gemini returned HTTP 503 (high demand). This is typically transient.\n' +
+        'Mitigations:\n' +
+        '  1) Retry with exponential backoff\n' +
+        '  2) Use a fallback Gemini model when the preferred model is overloaded\n' +
+        (details ? `\n\nDetails:\n${details}` : `\n\nRaw message:\n${message}`),
+      retryAfter
+    };
+  }
   if (status === 403 || /403|PERMISSION_DENIED|permission denied|not authorized|API has not been used|access not configured/i.test(message)) {
     return {
       type: 'PERMISSION_DENIED',
@@ -204,6 +228,8 @@ function classifyProviderError(error) {
 export async function callClaude({ systemPrompt, messages, tools, maxTokens } = {}) {
   try {
     if (config.AI_PROVIDER === 'gemini') {
+      const startedAt = Date.now();
+      const MAX_TOTAL_GEMINI_MS = Number(process.env.GEMINI_MAX_TOTAL_MS || 25000);
       const { GoogleGenerativeAI } = await import('@google/generative-ai');
       const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
       function convertMessagesToGeminiHistory(msgs) {
@@ -300,13 +326,25 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
       }
 
       let result;
-      const modelsToTry = [modelConfig.model];
-      if (!modelsToTry.includes('gemini-2.0-flash')) modelsToTry.push('gemini-2.0-flash');
+      const primaryModel = modelConfig.model;
+      const modelsToTry = [primaryModel];
+      // Fallbacks stay within Gemini (not switching providers).
+      // Use tools-capable defaults; some overload periods affect specific models.
+      const fallbackModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+      for (const m of fallbackModels) {
+        if (!modelsToTry.includes(m)) modelsToTry.push(m);
+      }
 
       let lastErr = null;
       for (const modelName of modelsToTry) {
         const maxAttemptsPerModel = 4;
         for (let attempt = 1; attempt <= maxAttemptsPerModel; attempt++) {
+          if (Date.now() - startedAt > MAX_TOTAL_GEMINI_MS) {
+            throw Object.assign(
+              new Error(`Gemini request exceeded ${MAX_TOTAL_GEMINI_MS}ms budget`),
+              { status: 503 }
+            );
+          }
           try {
             result = await sendWithModel(modelName);
             lastErr = null;
@@ -316,11 +354,21 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
             const status = err?.status || err?.code || 0;
             const msg = String(err?.message || '');
             if (String(status) === '429' || /Too Many Requests|rate limit|quota/i.test(msg)) {
-              console.warn(
-                `[GEMINI] Rate limit — model: ${modelName}. Attempt ${attempt}/${maxAttemptsPerModel}`
-              );
+              console.warn(`[GEMINI] 429 — model: ${modelName}. Attempt ${attempt}/${maxAttemptsPerModel}`);
               const base = 1500;
               const retryMs = Math.min(30000, base * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 250);
+              await new Promise((r) => setTimeout(r, retryMs));
+              continue;
+            }
+            if (String(status) === '503' || /high demand|Service Unavailable|temporarily unavailable/i.test(msg)) {
+              console.warn(`[GEMINI] 503 high demand — model: ${modelName}. Attempt ${attempt}/${maxAttemptsPerModel}`);
+              // If primary model is overloaded, switch to fallback quickly.
+              if (modelName === primaryModel) {
+                break;
+              }
+              const base = 2000;
+              const retryMs =
+                Math.min(15000, base * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 500);
               await new Promise((r) => setTimeout(r, retryMs));
               continue;
             }

@@ -2,7 +2,8 @@ const CONFIG = {
   // Replace with your Railway URL after deployment
   API_BASE_URL: "http://localhost:3001",
   MAX_RETRIES: 3,
-  REQUEST_TIMEOUT_MS: 30000
+  // Gemini can occasionally be slow (tool calls + backoff). Keep this above 30s to avoid false timeouts.
+  REQUEST_TIMEOUT_MS: 90000
   // Development override — comment out for production demo
   // API_BASE_URL: "http://localhost:3001",
 };
