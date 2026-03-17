@@ -39,6 +39,22 @@ async function runGeminiQueued(fn) {
   return p;
 }
 
+function parseRetryDelaySecondsFromMessage(msg) {
+  const s = String(msg || '');
+  // Gemini often embeds: "Please retry in 54.2s." or RetryInfo retryDelay.
+  const m = s.match(/Please retry in\s+([0-9]+(?:\.[0-9]+)?)s/i);
+  if (m?.[1]) {
+    const n = Math.ceil(Number(m[1]));
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+function isLikelyDailyQuotaExhaustion(msg) {
+  const s = String(msg || '');
+  return /RequestsPerDay|PerDay|per day|GenerateRequestsPerDay/i.test(s);
+}
+
 let anthropicClient = null;
 if (config.AI_PROVIDER === 'anthropic') {
   anthropicClient = new Anthropic({
@@ -360,10 +376,19 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
             lastErr = err;
             const status = err?.status || err?.code || 0;
             const msg = String(err?.message || '');
-            if (String(status) === '429' || /Too Many Requests|rate limit|quota/i.test(msg)) {
+            if (String(status) === '429' || /Too Many Requests|rate limit|quota|RESOURCE_EXHAUSTED/i.test(msg)) {
+              // IMPORTANT:
+              // - If this is a daily quota exhaustion, retrying or switching models won't help.
+              // - If Gemini provides a retry delay, respect it (prevents hammering + further throttling).
               console.warn(`[GEMINI] 429 — model: ${modelName}. Attempt ${attempt}/${maxAttemptsPerModel}`);
+              if (isLikelyDailyQuotaExhaustion(msg)) {
+                throw err;
+              }
+              const retryAfterS = parseRetryDelaySecondsFromMessage(msg);
               const base = 1500;
-              const retryMs = Math.min(30000, base * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 250);
+              const retryMs = retryAfterS
+                ? Math.min(60000, retryAfterS * 1000)
+                : Math.min(30000, base * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 250);
               await new Promise((r) => setTimeout(r, retryMs));
               continue;
             }
@@ -383,6 +408,14 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
           }
         }
         if (result) break;
+        // If we got here due to repeated 429s, do NOT switch models (avoid consuming more quota).
+        if (lastErr) {
+          const status = lastErr?.status || lastErr?.code || 0;
+          const msg = String(lastErr?.message || '');
+          if (String(status) === '429' || /RESOURCE_EXHAUSTED|quota|Too Many Requests|rate limit/i.test(msg)) {
+            throw lastErr;
+          }
+        }
       }
       if (!result) throw lastErr || new Error('Gemini call failed with no result');
 
