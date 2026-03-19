@@ -278,9 +278,17 @@ async function getActiveTab() {
 async function getPagePayload() {
   const tab = await getActiveTab();
   if (!tab?.id) throw new Error('No active tab');
+  let formFields = [];
+  try {
+    const scan = await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_FORM_FIELDS' });
+    if (scan?.success && Array.isArray(scan.fields)) {
+      // Keep payload bounded; backend mapping stays reliable even with a subset.
+      formFields = scan.fields.slice(0, 80);
+    }
+  } catch {}
   try {
     const res = await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_CONTENT', forceRefresh: true });
-    if (res?.success && res.data) return res.data;
+    if (res?.success && res.data) return { ...res.data, formFields };
   } catch {}
   try {
     const ctx = await chrome.tabs.sendMessage(tab.id, { type: 'GET_PAGE_CONTEXT' });
@@ -289,6 +297,7 @@ async function getPagePayload() {
       title: ctx.title,
       content: ctx.content,
       pageType: ctx.pageType,
+      formFields,
       extractedAt: new Date().toISOString()
     };
   } catch {

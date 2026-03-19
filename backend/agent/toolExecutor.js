@@ -339,6 +339,8 @@ export async function executeTool(toolName, toolInput, pageContext) {
           });
         }
         let formFields = Array.isArray(pageContext?.formFields) ? pageContext.formFields : [];
+        // Keep prompt size bounded. Content scripts may return many fields on complex pages.
+        if (formFields.length > 80) formFields = formFields.slice(0, 80);
         if (!formFields.length && pageContext?.content) {
           const detectResult = await callClaude({
             systemPrompt:
@@ -408,8 +410,11 @@ export async function executeTool(toolName, toolInput, pageContext) {
             message: 'Received an invalid mapping response. Please try again.'
           });
         }
-        const toFill = Array.isArray(fillInstructions) ? fillInstructions.filter((f) => !f?.skip) : [];
-        const skipped = Array.isArray(fillInstructions) ? fillInstructions.filter((f) => f?.skip) : [];
+        const all = Array.isArray(fillInstructions) ? fillInstructions : [];
+        // Hard cap to protect latency/quota if a model returns too much.
+        const capped = all.slice(0, 80);
+        const toFill = capped.filter((f) => !f?.skip).slice(0, 60);
+        const skipped = capped.filter((f) => f?.skip);
         const highConf = toFill.filter((f) => f?.confidence === 'high').length;
         const lowConf = toFill.filter((f) => f?.confidence === 'low').length;
         if (toFill.length === 0) {

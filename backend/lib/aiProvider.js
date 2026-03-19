@@ -100,6 +100,7 @@ function classifyProviderError(error) {
     if (error?.details) details = String(error.details);
   } catch {}
   const status = error?.status || error?.statusCode || 0;
+  const hasZeroLimit = /limit:\s*0\b/i.test(message) || /limit:\s*0\b/i.test(details);
   if (
     status === 503 ||
     /503|Service Unavailable|high demand|temporarily unavailable|overloaded/i.test(message)
@@ -159,16 +160,19 @@ function classifyProviderError(error) {
     /RESOURCE_EXHAUSTED|exceeded your current quota|plan and billing|Quota exceeded for metric/i.test(message)
   ) {
     // Best-effort Retry-After extraction (Gemini sometimes embeds "Please retry in Xs").
-    let retryAfter = 60;
+    // If quota limit is literally 0, retries are not useful — treat as non-retriable.
+    let retryAfter = hasZeroLimit ? 0 : 60;
     const m = message.match(/Please retry in\s+([0-9]+(?:\.[0-9]+)?)s/i);
     if (m?.[1]) {
       const s = Math.ceil(Number(m[1]));
-      if (Number.isFinite(s) && s > 0) retryAfter = Math.min(300, s);
+      if (!hasZeroLimit && Number.isFinite(s) && s > 0) retryAfter = Math.min(300, s);
     }
     return {
       type: 'QUOTA_EXCEEDED',
       httpStatus: 503,
-      userMessage: 'Gemini quota is exhausted or unavailable for this project/key. Please check plan/billing.',
+      userMessage: hasZeroLimit
+        ? "Gemini quota is set to 0 for this key/project (not 'used up'). Enable/allocate quota or switch AI provider."
+        : 'Gemini quota is exhausted or unavailable for this project/key. Please check plan/billing.',
       devMessage:
         'Gemini returned RESOURCE_EXHAUSTED (HTTP 429). This usually means the project/key has no available quota.\n' +
         'If the error mentions limit: 0, free-tier quota is effectively disabled for this project.\n\n' +
@@ -346,14 +350,12 @@ export async function callClaude({ systemPrompt, messages, tools, maxTokens } = 
 
       let result;
       const configuredModel = modelConfig.model;
-      // When tool calling is enabled, prefer a stable, widely-available model first to reduce 503s.
-      const preferStableToolsModel =
-        toolsCount > 0 && /^gemini-2\.5-/i.test(String(configuredModel || ''));
-      const primaryModel = preferStableToolsModel ? 'gemini-2.0-flash' : configuredModel;
+      // Always respect the configured model as primary.
+      // Some older configs may still point at non-tools variants; in that case we try known tools-capable fallbacks.
+      const primaryModel = configuredModel || 'gemini-2.5-flash';
       const modelsToTry = [primaryModel];
-      // Fallbacks stay within Gemini (not switching providers).
-      // Use tools-capable defaults; some overload periods affect specific models.
-      const fallbackModels = [configuredModel, 'gemini-2.5-flash', 'gemini-2.0-flash'];
+      // Fallbacks stay within Gemini and avoid forcing a model that may have 0 quota (e.g. free-tier-only 2.0-flash).
+      const fallbackModels = ['gemini-2.5-flash', 'gemini-2.5-flash-exp', 'gemini-2.0-flash'];
       for (const m of fallbackModels) {
         if (!modelsToTry.includes(m)) modelsToTry.push(m);
       }

@@ -37,7 +37,7 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ error: 'Validation failed', details: details.join('; ') });
     }
 
-    const { url, title, content, pageType } = pageContext;
+    const { url, title, content, pageType, formFields } = pageContext;
     console.log(
       `[CHAT ROUTE] Request received — userId: ${userId || 'anonymous'}, sessionId: ${sessionId}, pageType: ${pageType || 'unknown'}, messageLen: ${msgStr.length}`
     );
@@ -94,7 +94,13 @@ router.post('/', async (req, res, next) => {
     try {
       agentResult = await runAgent({
         message: msgStr,
-        pageContext: { url, title, content: sanitizedContent, pageType },
+        pageContext: {
+          url,
+          title,
+          content: sanitizedContent,
+          pageType,
+          formFields: Array.isArray(formFields) ? formFields : undefined
+        },
         userId,
         sessionId,
         userPreferences,
