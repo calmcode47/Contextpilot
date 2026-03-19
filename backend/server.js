@@ -4,8 +4,12 @@ import app from './app.js';
 const PORT = config.PORT;
 const ENV = config.NODE_ENV;
 
-app.listen(PORT, () => {
-  console.log(`
+// If Vercel imports this file, we should NOT call app.listen() (serverless runtime).
+// The actual request handling is done via backend/api/index.js + serverless-http.
+const runningOnVercel = Boolean(process.env.VERCEL);
+if (!runningOnVercel) {
+  app.listen(PORT, () => {
+    console.log(`
 ╔════════════════════════════════════════╗
 ║         ContextPilot API Server        ║
 ╠════════════════════════════════════════╝
@@ -15,7 +19,10 @@ app.listen(PORT, () => {
 ║  Supabase:    connected                ║
 ╚════════════════════════════════════════╝
 `);
-});
+  });
+} else {
+  console.log('[server.js] Detected Vercel runtime — skipping app.listen().');
+}
 
 /* Legacy local server bootstrap (kept for reference; not executed in Vercel deployments)
 
