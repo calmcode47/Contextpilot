@@ -1,23 +1,5 @@
-import config from './lib/config.js';
-import app from './app.js';
-
-const PORT = config.PORT;
-const ENV = config.NODE_ENV;
-
-app.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════╗
-║         ContextPilot API Server        ║
-╠════════════════════════════════════════╝
-║  Environment: ${String(ENV).padEnd(24)}║
-║  Port:        ${String(PORT).padEnd(24)}║
-║  AI Provider: ${String(config.AI_PROVIDER || 'gemini').padEnd(24)}║
-║  Supabase:    connected                ║
-╚════════════════════════════════════════╝
-`);
-});
-
-/* Legacy local server bootstrap (kept for reference; not executed in Vercel deployments)
+import dotenv from 'dotenv';
+dotenv.config();
 
 import express from 'express';
 import cors from 'cors';
@@ -36,7 +18,11 @@ import { validateDatabaseSchema } from './lib/supabase.js';
 
 const app = express();
 
-console.log(`AI provider: ${config.AI_PROVIDER} model: ${config.AI_PROVIDER === 'anthropic' ? config.ANTHROPIC_MODEL : config.GEMINI_MODEL}`);
+console.log(
+  `AI provider: ${config.AI_PROVIDER} model: ${
+    config.AI_PROVIDER === 'anthropic' ? config.ANTHROPIC_MODEL : config.GEMINI_MODEL
+  }`
+);
 
 if (config.NODE_ENV === 'production') {
   app.set('trust proxy', 1);
@@ -74,9 +60,6 @@ app.use('/api/history', historyRoutes);
 app.use('/api/ping', pingRoutes);
 app.use('/api/profile', profileRoutes);
 
-// Handle CORS preflight for all routes
-// Note: CORS preflights are handled by the global cors middleware above.
-
 // Friendly root endpoint for quick connectivity checks
 app.get('/', (req, res) => {
   res.json({
@@ -103,27 +86,12 @@ app.use((req, res, next) => {
 
 app.use(errorHandler);
 
-const PORT = config.PORT;
-const ENV = config.NODE_ENV;
-
 process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED_REJECTION]', reason);
 });
 process.on('uncaughtException', (err) => {
   console.error('[UNCAUGHT_EXCEPTION]', err);
-  process.exit(1);
 });
 
-app.listen(PORT, () => {
-  console.log(`
-╔════════════════════════════════════════╗
-║         ContextPilot API Server        ║
-╠════════════════════════════════════════╣
-║  Environment: ${String(ENV).padEnd(24)}║
-║  Port:        ${String(PORT).padEnd(24)}║
-║  AI Provider: ${String(config.AI_PROVIDER || 'gemini').padEnd(24)}║
-║  Supabase:    connected                ║
-╚════════════════════════════════════════╝
-`);
-});
-*/
+export default app;
+
